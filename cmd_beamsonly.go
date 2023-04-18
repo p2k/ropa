@@ -1,0 +1,92 @@
+//
+//  cmd_beamsonly.go
+//  ropa
+//
+//  Created by p2k on 15.04.2023
+//  Copyright (c) Patrick "p2k" Schneider
+//
+//  Licensed under the EUPL, Version 1.2 or – as soon they will be approved by
+//  the European Commission - subsequent versions of the EUPL (the "Licence");
+//  You may not use this work except in compliance with the Licence.
+//  You may obtain a copy of the Licence at:
+//
+//  https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the Licence is distributed on an "AS IS" basis,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the Licence for the specific language governing permissions and
+//  limitations under the Licence.
+//
+
+package main
+
+import (
+	"bytes"
+	"encoding/base64"
+	"fmt"
+	"ropa/grf"
+	"strings"
+
+	xz "github.com/remyoudompheng/go-liblzma"
+)
+
+const silenceWavXZBase64 = "/Td6WFoAAATm1rRGAgAhARwAAAAQz1jM4AV5AFZdACkSROskvC1gTK0BOTyNAvDlcmpMwjmyN5lmXCm3QgWT68hgF1HDB5Y/RcN0+2qZ3MT+gNgvb2HdqFmsvDnvAXHjHB800tCXwCBtsHT23wdjv7BKONkAAAAA7OR0ZLGHlhQAAXL6CgAAAI/QhuixxGf7AgAAAAAEWVo="
+
+func runBeamsonly(grfFilePaths []string, beamsonlyGRFPath string) bool {
+	silence := make(map[string]bool)
+	for _, path := range grfFilePaths {
+		fmt.Println("Loading", path, "...")
+		ar, err := grf.Open(path, true)
+		if err != nil {
+			fmt.Println("Error:", err)
+			return false
+		}
+		for _, fn := range ar.AllFileNames() {
+			fn = strings.ToLower(fn)
+			if strings.HasSuffix(fn, ".wav") && !keep[fn] {
+				silence[fn] = true
+			}
+		}
+		ar.Close()
+	}
+
+	fmt.Println("Creating", beamsonlyGRFPath, "...")
+	ar, err := grf.Create(beamsonlyGRFPath)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return false
+	}
+
+	silenceWavXZ, err := base64.StdEncoding.DecodeString(silenceWavXZBase64)
+	if err != nil {
+		panic(err)
+	}
+	silenceWav, err := xz.NewReader(bytes.NewBuffer(silenceWavXZ))
+	if err != nil {
+		panic(err)
+	}
+
+	var h *grf.FileHeader
+	for fn := range silence {
+		if h == nil {
+			h, err = ar.Put(fn, silenceWav, 9)
+			silenceWav.Close()
+			if err != nil {
+				ar.Close()
+				fmt.Println("Error:", err)
+				return false
+			}
+		} else {
+			ar.Link(fn, h)
+		}
+	}
+	err = ar.Close()
+	if err != nil {
+		fmt.Println("Error:", err)
+		return false
+	}
+
+	fmt.Println("Silenced", len(silence), "wav files.")
+	return true
+}
