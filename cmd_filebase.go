@@ -26,6 +26,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"hash"
 	"io"
@@ -33,6 +34,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"ropa/grf"
 	"sort"
 	"strings"
@@ -150,6 +152,7 @@ type filebaseWriter struct {
 	sp      []byte
 	co      []byte
 	lf      []byte
+	q       *regexp.Regexp
 	f       *os.File
 	c       *xz.Compressor
 	w       io.Writer
@@ -161,6 +164,7 @@ func newFilebaseWriter(filebaseFilePath string, xzCompress bool) *filebaseWriter
 		sp:     []byte{' '},
 		co:     []byte{':'},
 		lf:     []byte{'\n'},
+		q:      regexp.MustCompile(`^\s|^-\s|^[[{,&*!?|>#%@"']|\s#|:\s|\s$|^\+?\d*(\.\d*)?$`),
 	}
 	f, err := os.Create(filebaseFilePath)
 	if err != nil {
@@ -210,6 +214,20 @@ func (w *filebaseWriter) close() {
 	w.w = nil
 }
 
+func (w *filebaseWriter) writeQuotedIfNeeded(s string) error {
+	if len(s) == 0 || w.q.MatchString(s) {
+		b, err := json.Marshal(s)
+		if err != nil {
+			return err
+		}
+		_, err = w.w.Write(b)
+		return err
+	}
+
+	_, err := w.w.Write([]byte(s))
+	return err
+}
+
 func (w *filebaseWriter) writePath(pathspl []string) error {
 	m := len(w.lastspl)
 	n := len(pathspl)
@@ -223,7 +241,7 @@ func (w *filebaseWriter) writePath(pathspl []string) error {
 		if err != nil {
 			return err
 		}
-		_, err = w.w.Write([]byte(pathspl[i]))
+		err = w.writeQuotedIfNeeded(pathspl[i])
 		if err != nil {
 			return err
 		}
