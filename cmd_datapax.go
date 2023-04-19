@@ -102,7 +102,7 @@ func runDatapax(grfFilePath, paxFilePath string, quiet bool) bool {
 		}
 		if h1.Flags != grf.FileFlag {
 			h2.PAXRecords = make(map[string]string)
-			h2.PAXRecords["GRF.flag"] = string(h1.Flags)
+			h2.PAXRecords["GRF.flags"] = string(h1.Flags)
 		}
 		err = tw.WriteHeader(h2)
 		if err != nil {

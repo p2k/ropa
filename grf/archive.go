@@ -29,6 +29,7 @@ import (
 	"compress/zlib"
 	"encoding/binary"
 	"encoding/hex"
+	"hash"
 	"io"
 	"math"
 	"os"
@@ -97,6 +98,51 @@ func (h *FileHeaderHash) IsZero() bool {
 		h[20] == 0 && h[21] == 0 && h[22] == 0 && h[23] == 0 &&
 		h[24] == 0 && h[25] == 0 && h[26] == 0 && h[27] == 0 &&
 		h[28] == 0 && h[29] == 0 && h[30] == 0 && h[31] == 0
+}
+
+// SetZero sets all hash bytes to zero.
+func (h *FileHeaderHash) SetZero() {
+	h[0] = 0
+	h[1] = 0
+	h[2] = 0
+	h[3] = 0
+	h[4] = 0
+	h[5] = 0
+	h[6] = 0
+	h[7] = 0
+	h[8] = 0
+	h[9] = 0
+	h[10] = 0
+	h[11] = 0
+	h[12] = 0
+	h[13] = 0
+	h[14] = 0
+	h[15] = 0
+	h[16] = 0
+	h[17] = 0
+	h[18] = 0
+	h[19] = 0
+	h[20] = 0
+	h[21] = 0
+	h[22] = 0
+	h[23] = 0
+	h[24] = 0
+	h[25] = 0
+	h[26] = 0
+	h[27] = 0
+	h[28] = 0
+	h[29] = 0
+	h[30] = 0
+	h[31] = 0
+}
+
+// SetWithHasher sets the hash's bytes using the hasher's `Sum()` method.
+func (h *FileHeaderHash) SetWithHasher(hasher hash.Hash) {
+	hs := h[:0]
+	hh := hasher.Sum(hs)
+	if &hh != &hs {
+		copy(h[:], hh)
+	}
 }
 
 // Hex returns a hex string representation.
@@ -489,6 +535,22 @@ func (a *Archive) Head(name string) *FileHeader {
 	return a.entriesByName[name]
 }
 
+// RawPut inserts or replaces a file in the GRF directly.
+//
+// The given data stream needs to already be compressed correctly.
+// No hashing is performed.
+func (a *Archive) RawPut(name string, r io.Reader, uncompressedSize uint32, flags uint8) (*FileHeader, error) {
+	err := a.preparePut()
+	if err != nil {
+		return nil, err
+	}
+	_, err = io.Copy(a.file, r)
+	if err != nil {
+		return nil, err
+	}
+	return a.finalizePut(name, uncompressedSize, flags)
+}
+
 // Put inserts or replaces a file in the GRF.
 //
 // If the file already exists, its original data will remain in the GRF but
@@ -505,21 +567,15 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 	if err != nil {
 		return nil, err
 	}
-	_, err = a.file.Seek(int64(a.insertOffset)+46, io.SeekStart)
+	err = a.preparePut()
 	if err != nil {
 		return nil, err
 	}
-	padInsert := padding(a.insertOffset)
-	if padInsert > 0 {
-		_, err = a.file.Write(make([]byte, padInsert))
-		if err != nil {
-			return nil, err
-		}
-		a.insertOffset += padInsert
-	}
 	t := io.TeeReader(bufio.NewReader(r), hasher)
 	var w io.WriteCloser
+	var flags uint8
 	if compress > 0 {
+		flags = FileFlag
 		w, err = zlib.NewWriterLevel(a.file, compress)
 		if err != nil {
 			return nil, err
@@ -537,6 +593,31 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 			return nil, err
 		}
 	}
+	h, err := a.finalizePut(name, uint32(s), flags)
+	if err != nil {
+		return nil, err
+	}
+	h.Hash.SetWithHasher(hasher)
+	return h, nil
+}
+
+func (a *Archive) preparePut() error {
+	_, err := a.file.Seek(int64(a.insertOffset)+46, io.SeekStart)
+	if err != nil {
+		return err
+	}
+	padInsert := padding(a.insertOffset)
+	if padInsert > 0 {
+		_, err = a.file.Write(make([]byte, padInsert))
+		if err != nil {
+			return err
+		}
+		a.insertOffset += padInsert
+	}
+	return nil
+}
+
+func (a *Archive) finalizePut(name string, uncompressedSize uint32, flags uint8) (*FileHeader, error) {
 	realEnd, err := a.file.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return nil, err
@@ -558,11 +639,9 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 			Name:           name,
 			CompressedSize: cs,
 			AlignedLength:  cs + pad,
-			Size:           uint32(s),
+			Size:           uncompressedSize,
+			Flags:          flags,
 			Offset:         a.insertOffset,
-		}
-		if compress > 0 {
-			header.Flags = FileFlag
 		}
 		a.entriesInSequence = append(a.entriesInSequence, header)
 		a.entriesByName[name] = header
@@ -571,29 +650,37 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 		header.Linkname = ""
 		header.CompressedSize = cs
 		header.AlignedLength = cs + pad
-		header.Size = uint32(s)
+		header.Size = uncompressedSize
+		header.Flags = flags
 		header.Offset = a.insertOffset
-		if compress > 0 {
-			header.Flags = FileFlag
-		} else {
-			header.Flags = 0
-		}
+		header.Hash.SetZero()
 		if header.Deleted {
 			header.Deleted = false
 			a.FilesCount++
 		}
 	}
-	copy(header.Hash[:], hasher.Sum(nil))
 	a.insertOffset += header.AlignedLength
 	a.hasChanges = true
 	return header, nil
 }
 
-// Link creates a hard link to the given file header.
+// Link creates a hard link to the given file.
+//
+// Does nothing if names are equal. If the given file already is a link, will
+// walk back to the root file.
+func (a *Archive) Link(name string, linkname string) (*FileHeader, error) {
+	h := a.entriesByName[linkname]
+	if h == nil || h.Deleted {
+		return nil, os.ErrNotExist
+	}
+	return a.LinkHeader(name, h), nil
+}
+
+// LinkHeader creates a hard link to the given file header.
 //
 // Does nothing if name is equal to the name of the given file header. If the
 // given header already is a link, will walk back to the root file.
-func (a *Archive) Link(name string, header *FileHeader) *FileHeader {
+func (a *Archive) LinkHeader(name string, header *FileHeader) *FileHeader {
 	if name == header.Name {
 		return header
 	}

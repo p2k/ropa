@@ -78,7 +78,7 @@ func runBeamsonly(grfFilePaths []string, beamsonlyGRFPath string) bool {
 				return false
 			}
 		} else {
-			ar.Link(fn, h)
+			ar.LinkHeader(fn, h)
 		}
 	}
 	err = ar.Close()
