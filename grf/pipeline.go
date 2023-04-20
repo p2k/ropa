@@ -64,7 +64,7 @@ func (pw *pipelineWorker) work(compress int) {
 		panic(err)
 	}
 	for range pw.ready {
-		if pw.lname == "" && pw.flags != 0 {
+		if pw.lname == "" && pw.flags != 0 && pw.err == nil {
 			pw.out.Reset()
 			w.Reset(pw.out)
 			_, pw.err = io.Copy(w, pw.in)

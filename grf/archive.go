@@ -264,6 +264,11 @@ type Archive struct {
 	// Changing this value has no effect.
 	Name string
 
+	// IsReadonly reflects if the file has been opened read-only.
+	//
+	// Changing this value has no effect.
+	IsReadonly bool
+
 	// Key is the GRF key formerly used for encryption.
 	//
 	// By default this contains bytes with values of 1 through 14.
@@ -379,6 +384,7 @@ func Open(name string, readonly bool) (*Archive, error) {
 	}
 	a := &Archive{
 		Name:          name,
+		IsReadonly:    readonly,
 		entriesByName: make(map[string]*FileHeader),
 		file:          file,
 	}
