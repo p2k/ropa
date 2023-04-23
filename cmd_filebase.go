@@ -124,7 +124,7 @@ func (e *filebaseEntry) writeContentIfNeeded(contentFolderPath string, h grf.Fil
 	if err != nil {
 		if os.IsNotExist(err) {
 			preset := xz.Level9
-			if strings.HasSuffix(e.cmppath, ".mp3") {
+			if strings.HasSuffix(e.cmppath, ".mp3") || strings.HasSuffix(e.cmppath, ".grf") {
 				preset = xz.Level0
 			}
 			w, err := os.Create(contentPath)
@@ -345,6 +345,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 
 	var totalUncompressed, nDirs, nFiles int64
 	inputFiles := make([]*filebaseEntry, 0, len(inputFilePathsPatterns))
+	inputFilesSet := make(map[string]bool)
 	for _, pattern := range inputFilePathsPatterns {
 		matches, err := filepath.Glob(pattern)
 		if err != nil {
@@ -352,7 +353,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				bar.Exit()
 				fmt.Println()
 			}
-			fmt.Println("Error while matching files:", err)
+			fmt.Printf("Match pattern \"%s\" error: %s\n", pattern, err)
 			return false
 		}
 		for _, path := range matches {
@@ -366,8 +367,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				default:
 				}
 				cmppath := filepath.ToSlash(strings.ToLower(path))
-				if strings.Contains(cmppath, ".grf") {
-					// Skip
+				if inputFilesSet[cmppath] {
 					return nil
 				}
 				realpath, err := filepath.Abs(path)
@@ -388,6 +388,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 					inputFiles = append(inputFiles, &filebaseEntry{realpath: realpath, cmppath: cmppath, pathspl: pathspl, size: size})
 					totalUncompressed += size
 				}
+				inputFilesSet[cmppath] = true
 				return err
 			})
 			if err != nil {
@@ -475,7 +476,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				}
 				path = filepath.ToSlash(path)
 				cmppath := strings.ToLower(path)
-				if !strings.Contains(cmppath, ".grf") && cmppath != "symlinks" && !d.IsDir() {
+				if cmppath != "symlinks" && !d.IsDir() {
 					existingFiles[path] = true
 					pathspl := strings.Split(path, "/")
 					grfNFiles++
@@ -533,10 +534,6 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 			for _, name := range ar.AllFileNames() {
 				h := ar.Head(name)
 				cmppath := strings.ToLower(name)
-				if strings.Contains(cmppath, ".grf") {
-					// Skip, no inceptions
-					continue
-				}
 				pathspl := strings.Split(name, "/")
 				if h.Linkname == "" {
 					grfNFiles++
@@ -618,7 +615,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 					bar.Exit()
 					fmt.Println()
 				}
-				fmt.Printf("Error while opening file \"%s\": %s", e.realpath, err)
+				fmt.Printf("Error while opening file \"%s\": %s\n", e.realpath, err)
 				return false
 			}
 			bufi.Reset(r)
@@ -629,7 +626,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 					bar.Exit()
 					fmt.Println()
 				}
-				fmt.Printf("Error while reading file \"%s\": %s", e.realpath, err)
+				fmt.Printf("Error while reading file \"%s\": %s\n", e.realpath, err)
 				return false
 			}
 
@@ -643,7 +640,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 						bar.Exit()
 						fmt.Println()
 					}
-					fmt.Printf("Error while writing content \"%s\": %s", h.Hex(), err)
+					fmt.Printf("Error while writing content \"%s\": %s\n", h.Hex(), err)
 					return false
 				}
 				bufo.Reset()
@@ -692,7 +689,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 						bar.Exit()
 						fmt.Println()
 					}
-					fmt.Printf("Error while reading file \"%s\": %s", e.realpath, err)
+					fmt.Printf("Error while reading file \"%s\": %s\n", e.realpath, err)
 					return false
 				}
 				h, err = fbar.Hash(e.realpath)
@@ -701,7 +698,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 						bar.Exit()
 						fmt.Println()
 					}
-					fmt.Printf("Error while retrieving hash of \"%s\": %s", e.realpath, err)
+					fmt.Printf("Error while retrieving hash of \"%s\": %s\n", e.realpath, err)
 					return false
 				}
 				e.writeContentIfNeeded(contentFolderPath, h, bufo)
@@ -710,7 +707,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 						bar.Exit()
 						fmt.Println()
 					}
-					fmt.Printf("Error while writing content \"%s\": %s", h.Hex(), err)
+					fmt.Printf("Error while writing content \"%s\": %s\n", h.Hex(), err)
 					return false
 				}
 				bufo.Reset()
@@ -724,7 +721,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 						bar.Exit()
 						fmt.Println()
 					}
-					fmt.Printf("Error while reading file \"%s\": %s", e.realpath, err)
+					fmt.Printf("Error while reading file \"%s\": %s\n", e.realpath, err)
 					return false
 				}
 			}

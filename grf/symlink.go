@@ -25,9 +25,13 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // SymlinkFile simplifies handling symbolic links outside of GRF files.
@@ -39,9 +43,50 @@ type SymlinksFile struct {
 	Name string
 
 	linkMap map[string]string
+	folders map[string]map[string]bool
 
 	append bool
 	file   *os.File
+}
+
+func (s *SymlinksFile) insertFolderEntry(name string) {
+	if s.folders == nil {
+		s.folders = make(map[string]map[string]bool)
+	}
+	var entry string
+	for name != "" {
+		name, entry = path.Split(name)
+		if name != "" {
+			name = name[:len(name)-1]
+		}
+		folder := s.folders[name]
+		if folder == nil {
+			folder = make(map[string]bool)
+			s.folders[name] = folder
+		}
+		folder[entry] = true
+	}
+}
+
+func (s *SymlinksFile) deleteFolderEntry(name string) {
+	if s.folders == nil {
+		return
+	}
+	var entry string
+	for name != "" {
+		name, entry = path.Split(name)
+		if name != "" {
+			name = name[:len(name)-1]
+		}
+		folder := s.folders[name]
+		if folder != nil {
+			delete(folder, entry)
+			if len(folder) > 0 {
+				return
+			}
+			delete(s.folders, name)
+		}
+	}
 }
 
 // OpenSymlinks file at the given folder path (if it exists).
@@ -77,12 +122,13 @@ func OpenSymlinks(path string) (*SymlinksFile, error) {
 		return nil, err
 	}
 
-	s := &SymlinksFile{Name: path, linkMap: make(map[string]string), append: true}
+	s := &SymlinksFile{Name: path, linkMap: make(map[string]string), folders: make(map[string]map[string]bool), append: true}
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		spl := strings.SplitN(scanner.Text(), " -> ", 2)
 		if len(spl) == 2 {
 			s.linkMap[spl[0]] = spl[1]
+			s.insertFolderEntry(spl[0])
 		}
 	}
 	r.Close()
@@ -172,6 +218,7 @@ func (s *SymlinksFile) Add(name, target string) {
 	}
 
 	s.linkMap[name] = target
+	s.insertFolderEntry(name)
 
 	if s.file != nil {
 		s.file.WriteString(fmt.Sprintln(name, "->", target))
@@ -190,6 +237,7 @@ func (s *SymlinksFile) Remove(name string) {
 	}
 
 	delete(s.linkMap, name)
+	s.deleteFolderEntry(name)
 }
 
 // Write the symlink file.
@@ -229,4 +277,154 @@ func (s *SymlinksFile) Write() error {
 	}
 
 	return nil
+}
+
+// Glob returns the names of all files matching pattern.
+func (s *SymlinksFile) Glob(pattern string) ([]string, error) {
+	var result []string
+	if s.folders != nil {
+		for n := range s.folders {
+			if n == "" {
+				continue
+			}
+			m, err := path.Match(pattern, n)
+			if err != nil {
+				return nil, err
+			}
+			if m {
+				result = append(result, n)
+			}
+		}
+	}
+	if s.linkMap != nil {
+		for n := range s.linkMap {
+			m, err := path.Match(pattern, n)
+			if err != nil {
+				return nil, err
+			}
+			if m {
+				result = append(result, n)
+			}
+		}
+	}
+	return result, nil
+}
+
+type symlinkDirEntry struct {
+	name string
+	dir  bool
+
+	children []fs.DirEntry
+}
+
+func (d *symlinkDirEntry) Name() string {
+	return d.name
+}
+
+func (d *symlinkDirEntry) IsDir() bool {
+	return d.dir
+}
+
+func (d *symlinkDirEntry) Mode() fs.FileMode {
+	if d.dir {
+		return fs.ModeDir | 0755
+	}
+	return fs.ModeSymlink | 0644
+}
+
+func (d *symlinkDirEntry) Type() fs.FileMode {
+	if d.dir {
+		return fs.ModeDir
+	}
+	return 0
+}
+
+func (d *symlinkDirEntry) Size() int64 {
+	return 0
+}
+
+func (d *symlinkDirEntry) ModTime() time.Time {
+	return time.Time{}
+}
+
+func (d *symlinkDirEntry) Sys() any {
+	return nil
+}
+
+func (d *symlinkDirEntry) Info() (fs.FileInfo, error) {
+	return d, nil
+}
+
+func (d *symlinkDirEntry) Stat() (fs.FileInfo, error) {
+	return d, nil
+}
+
+func (d *symlinkDirEntry) Read([]byte) (int, error) {
+	return 0, fs.ErrInvalid
+}
+
+func (d *symlinkDirEntry) Close() error {
+	return nil
+}
+
+func (d *symlinkDirEntry) ReadDir(n int) ([]fs.DirEntry, error) {
+	if d.children == nil {
+		return nil, io.EOF
+	}
+	l := len(d.children)
+	if n <= 0 || n > l {
+		n = l
+	}
+	result := d.children[:n]
+	if n == l {
+		d.children = nil
+	} else {
+		d.children = d.children[n:]
+	}
+	return result, nil
+}
+
+// Open implements the FS interface in a very limited way.
+//
+// This can be used to walk paths recursively. Only folders can be opened.
+func (s *SymlinksFile) Open(name string) (fs.File, error) {
+	if s.folders == nil {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+	f := s.folders[name]
+	if f == nil {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+	var entries []fs.DirEntry
+	for n := range f {
+		nn := path.Join(name, n)
+		ff := s.folders[nn]
+		if ff != nil {
+			entries = append(entries, &symlinkDirEntry{name: n, dir: true})
+		} else {
+			if s.linkMap[nn] != "" {
+				entries = append(entries, &symlinkDirEntry{name: n})
+			}
+		}
+	}
+	return &symlinkDirEntry{name: path.Base(name), children: entries, dir: true}, nil
+}
+
+// Stat implements the StatFS interface in a very limited way.
+//
+// This can be used to walk paths recursively.
+func (s *SymlinksFile) Stat(name string) (fs.FileInfo, error) {
+	if s.folders != nil {
+		f := s.folders[name]
+		if f != nil {
+			return &symlinkDirEntry{name: path.Base(name), dir: true}, nil
+		}
+	}
+	if s.linkMap != nil {
+		l := s.linkMap[name]
+		if l != "" {
+			return &symlinkDirEntry{name: path.Base(name)}, nil
+		}
+	}
+	return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
 }

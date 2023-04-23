@@ -23,6 +23,7 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -32,8 +33,8 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
-func runExtract(grfFilePath, outputFolderPath string, ignoreErrors, quiet bool) bool {
-	ar, err := grf.Open(grfFilePath, false)
+func runExtract(grfFilePath string, outputPatterns []string, outputFolderPath string, ignoreErrors, quiet bool) bool {
+	ar, err := grf.Open(grfFilePath, true)
 	if err != nil {
 		fmt.Println("Error while opening GRF file:", err)
 		return false
@@ -63,10 +64,48 @@ func runExtract(grfFilePath, outputFolderPath string, ignoreErrors, quiet bool) 
 	}
 	defer slf.Write()
 
+	var totalUncompressed int64
+	var outputFiles []string
+	if len(outputPatterns) == 1 && outputPatterns[0] == "*" {
+		totalUncompressed = ar.TotalUncompressedSize()
+		outputFiles = ar.AllFileNames()
+	} else {
+		outputFiles = make([]string, 0, len(outputPatterns))
+		for _, pattern := range outputPatterns {
+			matches, err := ar.Glob(filepath.ToSlash(pattern))
+			if err != nil {
+				fmt.Printf("Match pattern \"%s\" error: %s\n", pattern, err)
+				return false
+			}
+			for _, path := range matches {
+				err = fs.WalkDir(ar, path, func(path string, d fs.DirEntry, err error) error {
+					if err != nil {
+						return err
+					}
+					if !d.IsDir() {
+						if d.Type() != fs.ModeSymlink {
+							fi, err := d.Info()
+							if err != nil {
+								return err
+							}
+							totalUncompressed += fi.Size()
+						}
+						outputFiles = append(outputFiles, path)
+					}
+					return nil
+				})
+				if err != nil {
+					fmt.Println("Error while listing files:", err)
+					return false
+				}
+			}
+		}
+	}
+
 	var bar *progressbar.ProgressBar
 	if !quiet {
 		bar = progressbar.NewOptions64(
-			ar.TotalUncompressedSize(),
+			totalUncompressed,
 			progressbar.OptionSetDescription("Extracting"),
 			progressbar.OptionFullWidth(),
 			progressbar.OptionShowBytes(true),
@@ -89,7 +128,7 @@ func runExtract(grfFilePath, outputFolderPath string, ignoreErrors, quiet bool) 
 	dirCache := make(map[string]bool)
 	dirCache[outputFolderPath] = true
 	var allErrors []string
-	for _, name := range ar.AllFileNames() {
+	for _, name := range outputFiles {
 		select {
 		case <-sc:
 			if bar != nil {
@@ -101,7 +140,7 @@ func runExtract(grfFilePath, outputFolderPath string, ignoreErrors, quiet bool) 
 		default:
 		}
 
-		// Symlink?
+		// Link?
 		h := ar.Head(name)
 		if h.Linkname != "" {
 			slf.Add(name, h.Linkname)

@@ -28,7 +28,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"os"
+	"io/fs"
 	"strings"
 
 	"golang.org/x/crypto/blake2b"
@@ -84,9 +84,15 @@ func (h *FileHeader) seekAndHashIfNeeded(file io.ReadSeekCloser, hasher hash.Has
 //
 // If the hash already has been computed, this will return the cached value.
 func (a *Archive) Hash(name string) (FileHeaderHash, error) {
+	a.m.Lock()
+	defer a.m.Unlock()
+
+	if a.entriesByName == nil {
+		return FileHeaderHash{}, fs.ErrNotExist
+	}
 	h := a.entriesByName[name]
 	if h == nil || h.Deleted {
-		return FileHeaderHash{}, os.ErrNotExist
+		return FileHeaderHash{}, fs.ErrNotExist
 	}
 
 	if !h.Hash.IsZero() {
@@ -121,6 +127,9 @@ func (a *Archive) HashAll(progress chan<- int64, ctx context.Context) (map[strin
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	a.m.Lock()
+	defer a.m.Unlock()
 
 	var totalProcessed int64
 	all := make(map[string]FileHeaderHash)
@@ -187,6 +196,9 @@ func (a *Archive) VerifyAll(hashMap map[string]FileHeaderHash, progress chan<- i
 		ctx = context.Background()
 	}
 
+	a.m.Lock()
+	defer a.m.Unlock()
+
 	var totalProcessed int64
 	var fileNames []string
 	byOffset := make(map[uint32]*FileHeader)
@@ -234,7 +246,7 @@ func (a *Archive) VerifyAll(hashMap map[string]FileHeaderHash, progress chan<- i
 	}
 
 	for fileName := range hashMap {
-		if a.entriesByName[fileName] == nil {
+		if a.entriesByName == nil || a.entriesByName[fileName] == nil {
 			fileNames = append(fileNames, fileName)
 		}
 	}

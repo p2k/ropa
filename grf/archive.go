@@ -31,10 +31,13 @@ import (
 	"encoding/hex"
 	"hash"
 	"io"
+	"io/fs"
 	"math"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/text/encoding/korean"
@@ -298,10 +301,13 @@ type Archive struct {
 
 	entriesInSequence []*FileHeader
 	entriesByName     map[string]*FileHeader
+	folders           map[string]map[string]bool
 
 	file         *os.File
 	hasChanges   bool
 	insertOffset uint32
+	m            sync.RWMutex
+	lf           *ArchivedFile
 }
 
 // Create creates and opens a new GRF file at the given path.
@@ -334,6 +340,46 @@ func Create(name string) (*Archive, error) {
 		return nil, err
 	}
 	return a, nil
+}
+
+func (a *Archive) insertFolderEntry(name string) {
+	if a.folders == nil {
+		a.folders = make(map[string]map[string]bool)
+	}
+	var entry string
+	for name != "" {
+		name, entry = path.Split(name)
+		if name != "" {
+			name = name[:len(name)-1]
+		}
+		folder := a.folders[name]
+		if folder == nil {
+			folder = make(map[string]bool)
+			a.folders[name] = folder
+		}
+		folder[entry] = true
+	}
+}
+
+func (a *Archive) deleteFolderEntry(name string) {
+	if a.folders == nil {
+		return
+	}
+	var entry string
+	for name != "" {
+		name, entry = path.Split(name)
+		if name != "" {
+			name = name[:len(name)-1]
+		}
+		folder := a.folders[name]
+		if folder != nil {
+			delete(folder, entry)
+			if len(folder) > 0 {
+				return
+			}
+			delete(a.folders, name)
+		}
+	}
 }
 
 // Open opens an existing GRF file at the given path.
@@ -386,6 +432,7 @@ func Open(name string, readonly bool) (*Archive, error) {
 		Name:          name,
 		IsReadonly:    readonly,
 		entriesByName: make(map[string]*FileHeader),
+		folders:       make(map[string]map[string]bool),
 		file:          file,
 	}
 	n, err = file.Read(a.Key[:])
@@ -451,10 +498,14 @@ func Open(name string, readonly bool) (*Archive, error) {
 		a.entriesInSequence[i] = h
 		if e := a.entriesByName[h.Name]; e != nil {
 			// Invalid duplicate path; delete earlier file
-			a.hasChanges = true
+			if !readonly {
+				a.hasChanges = true
+			}
+			a.deleteFolderEntry(h.Name)
 			e.Deleted = true
 		}
 		a.entriesByName[h.Name] = h
+		a.insertFolderEntry(h.Name)
 		thisOffset = h.EndOffset()
 		if thisOffset > highestOffset {
 			highestOffset = thisOffset
@@ -486,6 +537,9 @@ func Open(name string, readonly bool) (*Archive, error) {
 // AllFileNames returns an array of all file names within the GRF in the order
 // of appearance.
 func (a *Archive) AllFileNames() []string {
+	a.m.RLock()
+	defer a.m.RUnlock()
+
 	fns := make([]string, len(a.entriesInSequence))
 
 	i := 0
@@ -503,6 +557,9 @@ func (a *Archive) AllFileNames() []string {
 //
 // Deleted files and linked files are not taken into account.
 func (a *Archive) TotalUncompressedSize() int64 {
+	a.m.RLock()
+	defer a.m.RUnlock()
+
 	var total int64
 	seenOffsets := make(map[uint32]bool)
 	for _, h := range a.entriesInSequence {
@@ -520,6 +577,9 @@ func (a *Archive) TotalUncompressedSize() int64 {
 //
 // Deleted files and linked files are not taken into account.
 func (a *Archive) TotalCompressedSize() int64 {
+	a.m.RLock()
+	defer a.m.RUnlock()
+
 	var total int64
 	seenOffsets := make(map[uint32]bool)
 	for _, h := range a.entriesInSequence {
@@ -538,7 +598,13 @@ func (a *Archive) TotalCompressedSize() int64 {
 // This might return headers of files that have previously been marked as
 // deleted.
 func (a *Archive) Head(name string) *FileHeader {
-	return a.entriesByName[name]
+	a.m.RLock()
+	defer a.m.RUnlock()
+
+	if a.entriesByName != nil {
+		return a.entriesByName[name]
+	}
+	return nil
 }
 
 // RawPut inserts or replaces a file in the GRF directly.
@@ -546,7 +612,10 @@ func (a *Archive) Head(name string) *FileHeader {
 // The given data stream needs to already be compressed correctly.
 // No hashing is performed.
 func (a *Archive) RawPut(name string, r io.Reader, uncompressedSize uint32, flags uint8) (*FileHeader, error) {
-	err := a.preparePut()
+	a.m.Lock()
+	defer a.m.Unlock()
+
+	err := a.preparePut(name)
 	if err != nil {
 		return nil, err
 	}
@@ -564,6 +633,9 @@ func (a *Archive) RawPut(name string, r io.Reader, uncompressedSize uint32, flag
 // can be used to set flags or create hard links. The last parameter can be
 // used to set the compression level 0-9. It is recommended to keep it at 9.
 func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, error) {
+	a.m.Lock()
+	defer a.m.Unlock()
+
 	if compress < 0 {
 		compress = 0
 	} else if compress > 9 {
@@ -573,7 +645,7 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 	if err != nil {
 		return nil, err
 	}
-	err = a.preparePut()
+	err = a.preparePut(name)
 	if err != nil {
 		return nil, err
 	}
@@ -607,7 +679,13 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 	return h, nil
 }
 
-func (a *Archive) preparePut() error {
+func (a *Archive) preparePut(name string) error {
+	if a.folders != nil && a.folders[name] != nil {
+		return &ArchiveError{"cannot write to a directory entry"}
+	}
+	if a.lf != nil {
+		a.lf = nil
+	}
 	_, err := a.file.Seek(int64(a.insertOffset)+46, io.SeekStart)
 	if err != nil {
 		return err
@@ -651,6 +729,7 @@ func (a *Archive) finalizePut(name string, uncompressedSize uint32, flags uint8)
 		}
 		a.entriesInSequence = append(a.entriesInSequence, header)
 		a.entriesByName[name] = header
+		a.insertFolderEntry(name)
 		a.FilesCount++
 	} else {
 		header.Linkname = ""
@@ -675,10 +754,12 @@ func (a *Archive) finalizePut(name string, uncompressedSize uint32, flags uint8)
 // Does nothing if names are equal. If the given file already is a link, will
 // walk back to the root file.
 func (a *Archive) Link(name string, linkname string) (*FileHeader, error) {
+	a.m.RLock()
 	h := a.entriesByName[linkname]
 	if h == nil || h.Deleted {
-		return nil, os.ErrNotExist
+		return nil, fs.ErrNotExist
 	}
+	a.m.RUnlock()
 	return a.LinkHeader(name, h), nil
 }
 
@@ -690,6 +771,9 @@ func (a *Archive) LinkHeader(name string, header *FileHeader) *FileHeader {
 	if name == header.Name {
 		return header
 	}
+
+	a.m.Lock()
+	defer a.m.Unlock()
 
 	for header.Linkname != "" {
 		header = a.entriesByName[header.Linkname]
@@ -712,6 +796,7 @@ func (a *Archive) LinkHeader(name string, header *FileHeader) *FileHeader {
 		}
 		a.entriesInSequence = append(a.entriesInSequence, link)
 		a.entriesByName[name] = link
+		a.insertFolderEntry(name)
 		a.FilesCount++
 	} else {
 		link.Linkname = header.Name
@@ -728,36 +813,55 @@ func (a *Archive) LinkHeader(name string, header *FileHeader) *FileHeader {
 	return link
 }
 
-// Get reads a file from the GRF.
+// Get reads a file from the GRF in one go.
 //
 // Returns the total number of bytes read and will also update the file's header
 // to include a hash.
 func (a *Archive) Get(name string, w io.Writer) (int64, error) {
+	a.m.Lock()
+	defer a.m.Unlock()
+
+	if a.entriesByName == nil {
+		return 0, fs.ErrNotExist
+	}
 	h := a.entriesByName[name]
 	if h == nil || h.Deleted {
-		return 0, os.ErrNotExist
+		return 0, fs.ErrNotExist
 	}
+
+	if a.lf != nil {
+		a.lf = nil
+	}
+
 	_, err := a.file.Seek(int64(h.Offset)+46, io.SeekStart)
 	if err != nil {
 		return 0, err
 	}
-	hasher, err := blake2b.New256(nil)
-	if err != nil {
-		return 0, err
+	var hasher hash.Hash
+	if h.Hash.IsZero() {
+		hasher, err = blake2b.New256(nil)
+		if err != nil {
+			hasher = nil
+		}
 	}
 	lr := io.LimitReader(a.file, int64(h.CompressedSize))
-	var r io.ReadCloser
+	var zr io.ReadCloser
 	if h.Flags&FileFlag != 0 {
-		r, err = zlib.NewReader(lr)
+		zr, err = zlib.NewReader(lr)
 		if err != nil {
 			return 0, err
 		}
 	} else {
-		r = io.NopCloser(lr)
+		zr = io.NopCloser(lr)
 	}
-	t := io.TeeReader(bufio.NewReader(r), hasher)
-	s, err := io.Copy(w, t)
-	r.Close()
+	var r io.Reader
+	if hasher != nil {
+		r = io.TeeReader(zr, hasher)
+	} else {
+		r = zr
+	}
+	s, err := io.Copy(w, r)
+	zr.Close()
 	if err != nil {
 		return 0, err
 	}
@@ -773,6 +877,12 @@ func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 // The file is not physically removed, just its file header won't be written on
 // closing.
 func (a *Archive) Delete(name string) bool {
+	a.m.Lock()
+	defer a.m.Unlock()
+
+	if a.entriesByName == nil {
+		return false
+	}
 	h := a.entriesByName[name]
 	if h == nil || h.Deleted {
 		return false
@@ -886,6 +996,9 @@ func (a *Archive) writeFileTableAndHeader(truncate bool) error {
 // This will write the file table as well as all header fields if the file has
 // been modified since opening.
 func (a *Archive) Close() error {
+	a.m.Lock()
+	defer a.m.Unlock()
+
 	if !a.hasChanges {
 		return a.file.Close()
 	}

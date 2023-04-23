@@ -88,7 +88,9 @@ type Pipeline struct {
 	size       int
 	inp        int
 
-	allDone chan bool
+	processed int64
+	pc        chan<- int64
+	allDone   chan bool
 }
 
 // NewPipeline creates a new pipeline with the given archive and compression
@@ -117,6 +119,10 @@ func NewPipeline(ar *Archive, size, compress int) *Pipeline {
 							_, pw.err = ar.Link(pw.name, pw.lname)
 						} else {
 							_, pw.err = ar.RawPut(pw.name, pw.out, uint32(pw.size), pw.flags)
+							p.processed += pw.size
+							if p.pc != nil {
+								p.pc <- p.processed
+							}
 						}
 						if pw.err == nil {
 							pw.empty <- true
@@ -137,6 +143,13 @@ func NewPipeline(ar *Archive, size, compress int) *Pipeline {
 		close(p.allDone)
 	}()
 	return p
+}
+
+// SetProgressCh sets a channel to report progress in bytes.
+//
+// Calling this while the pipeline is running will likely crash.
+func (p *Pipeline) SetProgressCh(pc chan<- int64) {
+	p.pc = pc
 }
 
 func (p *Pipeline) nextEmptyWorker() *pipelineWorker {

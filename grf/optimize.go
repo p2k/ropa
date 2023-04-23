@@ -33,6 +33,9 @@ import (
 //
 // If the headers are already in order, does nothing.
 func (a *Archive) Sort() {
+	a.m.Lock()
+	defer a.m.Unlock()
+
 	sorter := func(i, j int) bool {
 		return a.entriesInSequence[i].Name < a.entriesInSequence[j].Name
 	}
@@ -56,6 +59,9 @@ func (a *Archive) Dedup(progress chan<- int64, ctx context.Context) (bool, error
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	a.m.Lock()
+	defer a.m.Unlock()
 
 	var totalProcessed int64
 	found := false
@@ -193,6 +199,9 @@ func (a *Archive) padChunks(length int64, buffer []uint8, bufferLength int64) er
 // it's considered to be safe. Parameters are optional and can be used to track
 // progress in bytes or cancel the operation.
 func (a *Archive) Defragment(progress chan<- int64, ctx context.Context) error {
+	a.m.Lock()
+	defer a.m.Unlock()
+
 	// Take inventory
 	byOffset := make(map[uint32]*FileHeader)     // For detecting links
 	links := make(map[*FileHeader][]*FileHeader) // original -> links

@@ -27,6 +27,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"ropa/grf"
 	"strings"
 )
 
@@ -42,8 +43,10 @@ var keep = map[string]bool{
 func printUsage() {
 	fmt.Fprintf(flag.CommandLine.Output(), `Usage: %s <command> [<args>]
 
+   list       List files in a GRF file
    extract    Extract a GRF file
-   checksum   Generate checksums for a GRF file's contents
+   update     Update a GRF file
+   checksum   Calculate checksums for a GRF file's contents
    verify     Verify the contents of a GRF file
    optimize   Optimize a GRF file
    datapax    Build data.pax.xz
@@ -63,16 +66,27 @@ func setSubcommandUsage(subcommand *flag.FlagSet, argsText string) {
 }
 
 func main() {
+	list := flag.NewFlagSet("list", flag.ExitOnError)
+	setSubcommandUsage(list, "<grf file>")
+
 	extract := flag.NewFlagSet("extract", flag.ExitOnError)
-	setSubcommandUsage(extract, "<grf file>")
+	setSubcommandUsage(extract, `<grf file> [<output files...>]
+Output files can contain glob patterns. Folders are extracted recursively.`)
 	extractOutput := extract.String("output", ".", "Output folder")
 	extractIgnore := extract.Bool("ignore", false, "Ignore errors on individual file extractions")
 	extractQuiet := extract.Bool("quiet", false, "Don't show progress")
 
+	update := flag.NewFlagSet("update", flag.ExitOnError)
+	setSubcommandUsage(extract, `<grf file> <input files...>
+Input files can contain glob patterns. Folders are added recursively.`)
+	updateDelete := update.Bool("delete", false, "Delete files inside the archive instead of updating")
+	updateNopipeline := update.Bool("nopipeline", false, "Does not use a pipeline for inserting files (saves memory)")
+	updateQuiet := update.Bool("quiet", false, "Don't show progress")
+
 	checksum := flag.NewFlagSet("checksum", flag.ExitOnError)
 	setSubcommandUsage(checksum, "<grf file>")
 	checksumOutput := checksum.String("output", "", "Output file name (default \"<input file>.b2b\")")
-	checkFix := checksum.Bool("fix", false, "Attempt to fix problems; will delete unreadable files and rewrite files with checksum errors")
+	checksumFix := checksum.Bool("fix", false, "Attempt to fix problems; will rewrite files as far as possible")
 	checksumQuiet := checksum.Bool("quiet", false, "Don't show progress")
 
 	verify := flag.NewFlagSet("verify", flag.ExitOnError)
@@ -94,7 +108,7 @@ func main() {
 
 	filebase := flag.NewFlagSet("filebase", flag.ExitOnError)
 	setSubcommandUsage(filebase, `[<input files...>]
-Input files can contain glob patterns. Folders are added recursively. GRF files are ignored on these paths; see the "-grf" option.`)
+Input files can contain glob patterns. Folders are added recursively. GRF files are not ignored on these paths, so be careful; also see the "-grf" option.`)
 	filebaseGRF := filebase.String("grf", "", "Path to a GRF file or folder to be used as its root")
 	filebaseOutput := filebase.String("output", "", "Output file name (required; should end with \".filebase.yml\" or \".filebase.yml.xz\")")
 	filebaseXZ := filebase.Bool("xz", false, "Compress output file")
@@ -114,6 +128,27 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 	}
 
 	switch os.Args[1] {
+	case "list":
+		list.Parse(os.Args[2:])
+		if extract.NArg() < 1 {
+			fmt.Println("Error: missing path to GRF file")
+			extract.Usage()
+			os.Exit(1)
+		}
+		ar, err := grf.Open(list.Arg(0), true)
+		if err != nil {
+			fmt.Println("Error while opening GRF file:", err)
+			os.Exit(1)
+		}
+		for _, path := range ar.AllFileNames() {
+			h := ar.Head(path)
+			if h != nil && h.Linkname != "" {
+				fmt.Println(path, "->", h.Linkname)
+			} else {
+				fmt.Println(path)
+			}
+		}
+		ar.Close()
 	case "extract":
 		extract.Parse(os.Args[2:])
 		if extract.NArg() < 1 {
@@ -121,8 +156,35 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 			extract.Usage()
 			os.Exit(1)
 		}
-		if !runExtract(extract.Arg(0), *extractOutput, *extractIgnore, *extractQuiet) {
+		args := extract.Args()
+		patters := []string{"*"}
+		if len(args) >= 2 {
+			patters = args[1:]
+		}
+		if !runExtract(args[0], patters, *extractOutput, *extractIgnore, *extractQuiet) {
 			os.Exit(1)
+		}
+	case "update":
+		update.Parse(os.Args[2:])
+		if update.NArg() < 1 {
+			fmt.Println("Error: missing path to GRF file")
+			update.Usage()
+			os.Exit(1)
+		}
+		if update.NArg() < 2 {
+			fmt.Println("Error: missing input files")
+			update.Usage()
+			os.Exit(1)
+		}
+		args := update.Args()
+		if *updateDelete {
+			if !runDelete(args[0], args[1:]) {
+				os.Exit(1)
+			}
+		} else {
+			if !runUpdate(args[0], args[1:], !*updateNopipeline, *updateQuiet) {
+				os.Exit(1)
+			}
 		}
 	case "checksum":
 		checksum.Parse(os.Args[2:])
@@ -134,7 +196,7 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 		if *checksumOutput == "" {
 			*checksumOutput = fmt.Sprintf("%s.b2b", filepath.Base(checksum.Arg(0)))
 		}
-		if !runChecksum(checksum.Arg(0), *checksumOutput, *checkFix, *checksumQuiet) {
+		if !runChecksum(checksum.Arg(0), *checksumOutput, *checksumFix, *checksumQuiet) {
 			os.Exit(1)
 		}
 	case "verify":
