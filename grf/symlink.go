@@ -54,10 +54,12 @@ func (s *SymlinksFile) insertFolderEntry(name string) {
 		s.folders = make(map[string]map[string]bool)
 	}
 	var entry string
-	for name != "" {
+	for name != "." {
 		name, entry = path.Split(name)
 		if name != "" {
 			name = name[:len(name)-1]
+		} else {
+			name = "."
 		}
 		folder := s.folders[name]
 		if folder == nil {
@@ -73,10 +75,12 @@ func (s *SymlinksFile) deleteFolderEntry(name string) {
 		return
 	}
 	var entry string
-	for name != "" {
+	for name != "." {
 		name, entry = path.Split(name)
 		if name != "" {
 			name = name[:len(name)-1]
+		} else {
+			name = "."
 		}
 		folder := s.folders[name]
 		if folder != nil {
@@ -389,6 +393,9 @@ func (d *symlinkDirEntry) ReadDir(n int) ([]fs.DirEntry, error) {
 // This can be used to walk paths recursively. Only folders can be opened.
 func (s *SymlinksFile) Open(name string) (fs.File, error) {
 	if s.folders == nil {
+		if name == "." {
+			return &symlinkDirEntry{name: ".", dir: true}, nil
+		}
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 	}
 	f := s.folders[name]
@@ -419,6 +426,8 @@ func (s *SymlinksFile) Stat(name string) (fs.FileInfo, error) {
 		if f != nil {
 			return &symlinkDirEntry{name: path.Base(name), dir: true}, nil
 		}
+	} else if name == "." {
+		return &symlinkDirEntry{name: ".", dir: true}, nil
 	}
 	if s.linkMap != nil {
 		l := s.linkMap[name]

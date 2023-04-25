@@ -79,6 +79,7 @@ func runOptimize(grfFilePath string, dedup, sort, defrag, quiet bool) bool {
 			fmt.Println("Deduplicating...")
 		}
 		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		go func() {
 			for {
 				select {
@@ -148,6 +149,7 @@ func runOptimize(grfFilePath string, dedup, sort, defrag, quiet bool) bool {
 			fmt.Println("Defragmenting...")
 		}
 		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		go func() {
 			for {
 				select {

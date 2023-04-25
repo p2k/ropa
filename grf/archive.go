@@ -347,10 +347,12 @@ func (a *Archive) insertFolderEntry(name string) {
 		a.folders = make(map[string]map[string]bool)
 	}
 	var entry string
-	for name != "" {
+	for name != "." {
 		name, entry = path.Split(name)
 		if name != "" {
 			name = name[:len(name)-1]
+		} else {
+			name = "."
 		}
 		folder := a.folders[name]
 		if folder == nil {
@@ -366,10 +368,12 @@ func (a *Archive) deleteFolderEntry(name string) {
 		return
 	}
 	var entry string
-	for name != "" {
+	for name != "." {
 		name, entry = path.Split(name)
 		if name != "" {
 			name = name[:len(name)-1]
+		} else {
+			name = "."
 		}
 		folder := a.folders[name]
 		if folder != nil {
@@ -680,7 +684,7 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 }
 
 func (a *Archive) preparePut(name string) error {
-	if a.folders != nil && a.folders[name] != nil {
+	if name == "." || (a.folders != nil && a.folders[name] != nil) {
 		return &ArchiveError{"cannot write to a directory entry"}
 	}
 	if a.lf != nil {

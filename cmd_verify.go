@@ -85,6 +85,7 @@ func runVerify(grfFilePath, checksumFilePath string, quiet bool) bool {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, os.Interrupt)
 	defer signal.Stop(sc)

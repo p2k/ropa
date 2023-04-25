@@ -172,6 +172,9 @@ func (f *ArchivedFile) ReadDir(n int) ([]fs.DirEntry, error) {
 
 func (a *Archive) doReadDir(name string) ([]fs.DirEntry, error) {
 	if a.folders == nil {
+		if name == "." {
+			return nil, nil
+		}
 		return nil, fs.ErrNotExist
 	}
 	f := a.folders[name]
@@ -277,12 +280,15 @@ func (a *Archive) ReadFile(name string) ([]byte, error) {
 
 // Stat returns a FileInfo describing the file.
 //
-// This implements the StatFS interface. It can be slow for folders.
+// This implements the StatFS interface.
 func (a *Archive) Stat(name string) (fs.FileInfo, error) {
 	a.m.RLock()
 	defer a.m.RUnlock()
 
 	if a.entriesByName == nil || a.folders == nil {
+		if name == "." {
+			return &ArchivedFileInfo{dirname: "."}, nil
+		}
 		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
 	}
 	h := a.entriesByName[name]

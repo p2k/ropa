@@ -65,6 +65,7 @@ func runChecksum(grfFilePath, checksumFilePath string, tryFix, quiet bool) bool 
 		fmt.Println("Calculating...")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, os.Interrupt)
 	defer signal.Stop(sc)
