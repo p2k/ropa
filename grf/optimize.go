@@ -93,7 +93,7 @@ func (a *Archive) Dedup(progress chan<- int64, ctx context.Context) (bool, error
 
 		select {
 		case <-ctx.Done():
-			return false, context.Canceled
+			return false, ctx.Err()
 		default:
 			totalProcessed += int64(h.Size)
 			if progress != nil {
@@ -289,7 +289,7 @@ func (a *Archive) Defragment(progress chan<- int64, ctx context.Context) error {
 	// Early cancel
 	select {
 	case <-ctx.Done():
-		return context.Canceled
+		return ctx.Err()
 	default:
 	}
 
@@ -361,7 +361,7 @@ func (a *Archive) Defragment(progress chan<- int64, ctx context.Context) error {
 
 		select {
 		case <-ctx.Done():
-			return context.Canceled
+			return ctx.Err()
 		default:
 		}
 
@@ -394,7 +394,7 @@ func (a *Archive) Defragment(progress chan<- int64, ctx context.Context) error {
 				// Exit opportunity
 				select {
 				case <-ctx.Done():
-					return context.Canceled
+					return ctx.Err()
 				default:
 				}
 			}
@@ -436,7 +436,7 @@ func (a *Archive) Defragment(progress chan<- int64, ctx context.Context) error {
 				// Exit opportunity
 				select {
 				case <-ctx.Done():
-					return context.Canceled
+					return ctx.Err()
 				default:
 				}
 			}
@@ -453,7 +453,7 @@ func (a *Archive) Defragment(progress chan<- int64, ctx context.Context) error {
 				// Exit opportunity
 				select {
 				case <-ctx.Done():
-					return context.Canceled
+					return ctx.Err()
 				default:
 				}
 			}

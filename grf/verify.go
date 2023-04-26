@@ -164,7 +164,7 @@ func (a *Archive) HashAll(progress chan<- int64, ctx context.Context) (map[strin
 
 		select {
 		case <-ctx.Done():
-			return nil, context.Canceled
+			return nil, ctx.Err()
 		default:
 			totalProcessed += int64(h.Size)
 			if progress != nil {
@@ -233,7 +233,7 @@ func (a *Archive) VerifyAll(hashMap map[string]FileHeaderHash, progress chan<- i
 
 			select {
 			case <-ctx.Done():
-				return fileNames, context.Canceled
+				return fileNames, ctx.Err()
 			default:
 				totalProcessed += int64(h.Size)
 				if progress != nil {
