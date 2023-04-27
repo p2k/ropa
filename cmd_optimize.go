@@ -97,7 +97,7 @@ func runOptimize(grfFilePath string, dedup, sort, defrag, quiet bool) bool {
 				}
 			}
 		}()
-		_, err = ar.Dedup(pc, ctx)
+		_, err = ar.Dedup(ctx, pc)
 		close(pc)
 		if err != nil {
 			if bar != nil {
@@ -167,7 +167,7 @@ func runOptimize(grfFilePath string, dedup, sort, defrag, quiet bool) bool {
 				}
 			}
 		}()
-		err = ar.Defragment(pc, ctx)
+		err = ar.Defragment(ctx, pc)
 		close(pc)
 		if err != nil {
 			if bar != nil {

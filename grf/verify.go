@@ -114,18 +114,14 @@ func (a *Archive) Hash(name string) (FileHeaderHash, error) {
 
 // HashAll will return a mapping of all file names to their hashes.
 //
-// The parameters are optional and can be used to track progress in bytes or
-// cancel the operation. If there is no severe error but one or more files could
-// not be read properly, the function will return both a result and an
-// ArchiveIntegrityError.
-func (a *Archive) HashAll(progress chan<- int64, ctx context.Context) (map[string]FileHeaderHash, error) {
+// The operation can be cancelled using the context; progress in bytes can be
+// tracked through the channel. If there is no severe error but one or more
+// files could not be read properly, the function will return both a result and
+// an ArchiveIntegrityError.
+func (a *Archive) HashAll(ctx context.Context, progress chan<- int64) (map[string]FileHeaderHash, error) {
 	hasher, err := blake2b.New256(nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if ctx == nil {
-		ctx = context.Background()
 	}
 
 	a.m.Lock()
@@ -182,18 +178,14 @@ func (a *Archive) HashAll(progress chan<- int64, ctx context.Context) (map[strin
 // VerifyAll will return a set of file names for which the hash is incorrect.
 //
 // Missing files or extra files are treated as if the hash value was incorrect.
-// The other parameters are optional and can be used to track progress in bytes
-// or cancel the operation. If there is no severe error but one or more files
-// could not be read properly, the function will return both a result and an
-// ArchiveIntegrityError.
-func (a *Archive) VerifyAll(hashMap map[string]FileHeaderHash, progress chan<- int64, ctx context.Context) ([]string, error) {
+// The operation can be cancelled using the context; progress in bytes can be
+// tracked through the channel. If there is no severe error but one or more
+// files could not be read properly, the function will return both a result and
+// an ArchiveIntegrityError.
+func (a *Archive) VerifyAll(ctx context.Context, progress chan<- int64, hashMap map[string]FileHeaderHash) ([]string, error) {
 	hasher, err := blake2b.New256(nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if ctx == nil {
-		ctx = context.Background()
 	}
 
 	a.m.Lock()

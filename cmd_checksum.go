@@ -89,7 +89,7 @@ func runChecksum(grfFilePath, checksumFilePath string, tryFix, quiet bool) bool 
 		}
 	}()
 
-	hashes, err := ar.HashAll(pc, ctx)
+	hashes, err := ar.HashAll(ctx, pc)
 
 	if bar != nil {
 		bar.Describe("Writing checksum file")

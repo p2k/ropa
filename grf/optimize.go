@@ -48,16 +48,12 @@ func (a *Archive) Sort() {
 // Dedup will deduplicate files in the archive by comparing their hash values
 // and making them point to the same data.
 //
-// Parameters are optional and can be used to track progress in bytes or cancel
-// the operation.
-func (a *Archive) Dedup(progress chan<- int64, ctx context.Context) (bool, error) {
+// The operation can be cancelled using the context; progress in bytes can be
+// tracked through the channel.
+func (a *Archive) Dedup(ctx context.Context, progress chan<- int64) (bool, error) {
 	hasher, err := blake2b.New256(nil)
 	if err != nil {
 		return false, err
-	}
-
-	if ctx == nil {
-		ctx = context.Background()
 	}
 
 	a.m.Lock()
@@ -196,9 +192,9 @@ func (a *Archive) padChunks(length int64, buffer []uint8, bufferLength int64) er
 // consolidating unused space and zeroing deleted files.
 //
 // This happens in-place writing the file table after each move operation so
-// it's considered to be safe. Parameters are optional and can be used to track
-// progress in bytes or cancel the operation.
-func (a *Archive) Defragment(progress chan<- int64, ctx context.Context) error {
+// it's considered to be safe. The operation can be cancelled using the context;
+// progress in bytes can be tracked through the channel.
+func (a *Archive) Defragment(ctx context.Context, progress chan<- int64) error {
 	a.m.Lock()
 	defer a.m.Unlock()
 
@@ -281,10 +277,6 @@ func (a *Archive) Defragment(progress chan<- int64, ctx context.Context) error {
 	}
 	currentSequence = append(currentSequence, &ftHeader)
 	ls++
-
-	if ctx == nil {
-		ctx = context.Background()
-	}
 
 	// Early cancel
 	select {

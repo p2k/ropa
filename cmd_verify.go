@@ -109,7 +109,7 @@ func runVerify(grfFilePath, checksumFilePath string, quiet bool) bool {
 		}
 	}()
 
-	failedFiles, err := ar.VerifyAll(hashMap, pc, ctx)
+	failedFiles, err := ar.VerifyAll(ctx, pc, hashMap)
 
 	if bar != nil {
 		bar.Finish()

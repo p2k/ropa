@@ -82,7 +82,7 @@ type FileHeaderHash [blake2b.Size256]byte
 // hash. Returns a zero hash on error.
 func FileHeaderHashFromHex(s string) FileHeaderHash {
 	var h FileHeaderHash
-	if n, err := hex.Decode(h[:], []byte(s)); err != nil {
+	if n, err := hex.Decode(h[:], []byte(s)); err != nil && n == blake2b.Size256 {
 		for i := 0; i < n; i++ {
 			h[i] = 0
 		}
