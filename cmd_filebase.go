@@ -39,20 +39,21 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/andybalholm/brotli"
 	"github.com/dustin/go-humanize"
 	"github.com/dustin/go-humanize/english"
-	xz "github.com/remyoudompheng/go-liblzma"
 	"github.com/schollz/progressbar/v3"
 	"golang.org/x/crypto/blake2b"
 )
 
 type filebaseEntry struct {
-	realpath  string
-	cmppath   string
-	pathspl   []string
-	isDir     bool
-	isSymlink bool
-	size      int64
+	realpath   string
+	cmppath    string
+	pathspl    []string
+	isDir      bool
+	isSymlink  bool
+	isWhiteout bool
+	size       int64
 }
 
 type virtualGRF struct {
@@ -123,21 +124,21 @@ func (e *filebaseEntry) writeContentIfNeeded(contentFolderPath string, h grf.Fil
 	_, err := os.Stat(contentPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			preset := xz.Level9
+			level := brotli.BestCompression
 			if strings.HasSuffix(e.cmppath, ".mp3") || strings.HasSuffix(e.cmppath, ".grf") {
-				preset = xz.Level0
+				level = brotli.BestSpeed
 			}
 			w, err := os.Create(contentPath)
 			if err != nil {
 				return err
 			}
 			defer w.Close()
-			xzc, err := xz.NewWriter(w, preset)
+			brc := brotli.NewWriterLevel(w, level)
 			if err != nil {
 				return err
 			}
-			defer xzc.Close()
-			_, err = io.Copy(xzc, r)
+			defer brc.Close()
+			_, err = io.Copy(brc, r)
 			return err
 		} else {
 			return err
@@ -152,18 +153,20 @@ type filebaseWriter struct {
 	sp      []byte
 	co      []byte
 	lf      []byte
+	wo      []byte
 	q       *regexp.Regexp
 	f       *os.File
-	c       *xz.Compressor
+	c       *brotli.Writer
 	w       io.Writer
 }
 
-func newFilebaseWriter(filebaseFilePath string, xzCompress bool) *filebaseWriter {
+func newFilebaseWriter(filebaseFilePath string, compress bool) *filebaseWriter {
 	w := &filebaseWriter{
 		indent: make([][]byte, 16),
 		sp:     []byte{' '},
 		co:     []byte{':'},
 		lf:     []byte{'\n'},
+		wo:     []byte{' ', '~', '\n'},
 		q:      regexp.MustCompile(`^\s|^-\s|^[[{,&*!?|>#%@"']|\s#|:\s|\s$|^\+?\d*(\.\d*)?$`),
 	}
 	f, err := os.Create(filebaseFilePath)
@@ -174,13 +177,8 @@ func newFilebaseWriter(filebaseFilePath string, xzCompress bool) *filebaseWriter
 	w.f = f
 	w.w = f
 
-	if xzCompress {
-		c, err := xz.NewWriter(f, xz.Level9)
-		if err != nil {
-			f.Close()
-			fmt.Println("Error while creating compressed stream:", err)
-			return nil
-		}
+	if compress {
+		c := brotli.NewWriterLevel(f, brotli.BestCompression)
 		w.c = c
 		w.w = c
 	}
@@ -266,6 +264,11 @@ func (w *filebaseWriter) writeEmpty() error {
 	return err
 }
 
+func (w *filebaseWriter) writeWhiteout() error {
+	_, err := w.w.Write(w.wo)
+	return err
+}
+
 func (w *filebaseWriter) writeHash(h grf.FileHeaderHash) error {
 	_, err := w.w.Write(w.sp)
 	if err != nil {
@@ -291,13 +294,7 @@ func (w *filebaseWriter) writeGRF() error {
 	return err
 }
 
-func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath, whiteoutFilePath, contentFolderPath string, xzCompress, quiet bool) bool {
-	fbw := newFilebaseWriter(filebaseFilePath, xzCompress)
-	if fbw == nil {
-		return false
-	}
-	defer fbw.close()
-
+func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath, whiteoutFilePath, contentFolderPath string, compress, quiet bool) bool {
 	hasher, err := blake2b.New256(nil)
 	if err != nil {
 		fmt.Println("Error while creating hasher:", err)
@@ -345,7 +342,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 
 	var totalUncompressed, nDirs, nFiles int64
 	inputFiles := make([]*filebaseEntry, 0, len(inputFilePathsPatterns))
-	inputFilesSet := make(map[string]bool)
+	inputFilesIndex := make(map[string]int)
 	for _, pattern := range inputFilePathsPatterns {
 		matches, err := filepath.Glob(pattern)
 		if err != nil {
@@ -367,7 +364,10 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				default:
 				}
 				cmppath := filepath.ToSlash(strings.ToLower(path))
-				if inputFilesSet[cmppath] {
+				if d.IsDir() {
+					cmppath = cmppath + "/"
+				}
+				if _, ok := inputFilesIndex[cmppath]; ok {
 					return nil
 				}
 				realpath, err := filepath.Abs(path)
@@ -377,7 +377,8 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				pathspl := strings.Split(path, sep)
 				if d.IsDir() {
 					nDirs++
-					inputFiles = append(inputFiles, &filebaseEntry{realpath: realpath, cmppath: cmppath, pathspl: pathspl, isDir: true})
+					inputFilesIndex[cmppath] = len(inputFiles)
+					inputFiles = append(inputFiles, &filebaseEntry{cmppath: cmppath, pathspl: pathspl, isDir: true})
 				} else {
 					fi, err := d.Info()
 					if err != nil {
@@ -385,10 +386,10 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 					}
 					nFiles++
 					size := fi.Size()
+					inputFilesIndex[cmppath] = len(inputFiles)
 					inputFiles = append(inputFiles, &filebaseEntry{realpath: realpath, cmppath: cmppath, pathspl: pathspl, size: size})
 					totalUncompressed += size
 				}
-				inputFilesSet[cmppath] = true
 				return err
 			})
 			if err != nil {
@@ -404,6 +405,50 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				return false
 			}
 		}
+	}
+
+	if whiteoutFilePath != "" {
+		r, err := os.Open(whiteoutFilePath)
+		if err != nil {
+			fmt.Println("Error while opening whiteout file:", err)
+			return false
+		}
+
+		scanner := bufio.NewScanner(r)
+		for scanner.Scan() {
+			path := scanner.Text()
+			cmppath := filepath.ToSlash(strings.ToLower(path))
+			if i, ok := inputFilesIndex[cmppath]; ok {
+				inputFile := inputFiles[i]
+				if !inputFile.isWhiteout {
+					if inputFile.isDir {
+						fmt.Println("Error: path referred to in whiteout file points to directory:", path)
+						return false
+					}
+					inputFile.isWhiteout = true
+					totalUncompressed -= inputFile.size
+				}
+				continue
+			}
+
+			pathspl := strings.Split(path, sep)
+			for i := 1; i < len(pathspl); i++ {
+				dirPathspl := pathspl[:i]
+				dirCmppath := strings.ToLower(strings.Join(dirPathspl, "/")) + "/"
+				if j, ok := inputFilesIndex[dirCmppath]; ok && inputFiles[j].isDir {
+					pathspl[i-1] = inputFiles[j].pathspl[i-1]
+				} else {
+					nDirs++
+					inputFilesIndex[dirCmppath] = len(inputFiles)
+					inputFiles = append(inputFiles, &filebaseEntry{cmppath: dirCmppath, pathspl: dirPathspl, isDir: true})
+				}
+			}
+
+			nFiles++
+			inputFilesIndex[cmppath] = len(inputFiles)
+			inputFiles = append(inputFiles, &filebaseEntry{cmppath: cmppath, pathspl: pathspl, isWhiteout: true})
+		}
+		r.Close()
 	}
 
 	sort.Slice(inputFiles, func(i, j int) bool { return inputFiles[i].cmppath < inputFiles[j].cmppath })
@@ -565,14 +610,20 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 		)
 	}
 
+	fbw := newFilebaseWriter(filebaseFilePath, compress)
+	if fbw == nil {
+		return false
+	}
+	defer fbw.close()
+
 	var h grf.FileHeaderHash
 
 	if nFiles > 0 {
 		if bar != nil {
-			bar.Describe("Building root")
+			bar.Describe("Building for root")
 			bar.ChangeMax64(totalUncompressed + grfTotalUncompressed)
 		} else {
-			fmt.Println("Building root...")
+			fmt.Println("Building for root...")
 		}
 		err = fbw.writeRoot()
 		if err != nil {
@@ -606,6 +657,9 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 
 			if e.isDir {
 				fbw.writeEmpty()
+				continue
+			} else if e.isWhiteout {
+				fbw.writeWhiteout()
 				continue
 			}
 
@@ -655,10 +709,10 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 
 	if grfNFiles > 0 {
 		if bar != nil {
-			bar.Describe("Building GRF")
+			bar.Describe("Building for GRF")
 			bar.ChangeMax64(totalUncompressed + grfTotalUncompressed)
 		} else {
-			fmt.Println("Building GRF...")
+			fmt.Println("Building for GRF...")
 		}
 		err = fbw.writeGRF()
 		if err != nil {
@@ -753,13 +807,8 @@ func runContentcheck(contentFolderPath string) {
 			if err != nil {
 				return err
 			}
-			xzr, err := xz.NewReader(r)
-			if err != nil {
-				r.Close()
-				return err
-			}
-			_, err = io.Copy(hasher, xzr)
-			xzr.Close()
+			brr := brotli.NewReader(r)
+			_, err = io.Copy(hasher, brr)
 			r.Close()
 			if err != nil {
 				fmt.Println(path)

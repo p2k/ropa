@@ -28,7 +28,7 @@ import (
 	"os/signal"
 	"ropa/grf"
 
-	xz "github.com/remyoudompheng/go-liblzma"
+	"github.com/andybalholm/brotli"
 	"github.com/schollz/progressbar/v3"
 )
 
@@ -45,13 +45,9 @@ func runDatapax(grfFilePath, paxFilePath string, quiet bool) bool {
 		return false
 	}
 	defer paxFile.Close()
-	xzw, err := xz.NewWriter(paxFile, xz.Level9)
-	if err != nil {
-		fmt.Println("Error while creating xz stream:", err)
-		return false
-	}
-	defer xzw.Close()
-	tw := tar.NewWriter(xzw)
+	brw := brotli.NewWriterLevel(paxFile, brotli.BestCompression)
+	defer brw.Close()
+	tw := tar.NewWriter(brw)
 	defer tw.Close()
 
 	totalUncompressed := ar.TotalUncompressedSize()

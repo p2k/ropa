@@ -49,7 +49,7 @@ func printUsage() {
    checksum   Calculate checksums for a GRF file's contents
    verify     Verify the contents of a GRF file
    optimize   Optimize a GRF file
-   datapax    Build data.pax.xz
+   datapax    Build data.pax.br
    filebase   Build a filebase
    beamsonly  Build the beams-only GRF
 `, os.Args[0])
@@ -103,15 +103,15 @@ Input files can contain glob patterns. Folders are added recursively.`)
 
 	datapax := flag.NewFlagSet("datapax", flag.ExitOnError)
 	setSubcommandUsage(datapax, "<path to data.grf>")
-	datapaxOutput := datapax.String("output", "", "Output file name (default \"<input file>.pax.xz\")")
+	datapaxOutput := datapax.String("output", "", "Output file name (default \"<input file>.pax.br\")")
 	datapaxQuiet := datapax.Bool("quiet", false, "Don't show progress")
 
 	filebase := flag.NewFlagSet("filebase", flag.ExitOnError)
 	setSubcommandUsage(filebase, `[<input files...>]
-Input files can contain glob patterns. Folders are added recursively. GRF files are not ignored on these paths, so be careful; also see the "-grf" option.`)
+Input files can contain glob patterns. Folders are added recursively. GRF files are not ignored on these paths and will be added as regular files, so be careful; also see the "-grf" option.`)
 	filebaseGRF := filebase.String("grf", "", "Path to a GRF file or folder to be used as its root")
-	filebaseOutput := filebase.String("output", "", "Output file name (required; should end with \".filebase.yml\" or \".filebase.yml.xz\")")
-	filebaseXZ := filebase.Bool("xz", false, "Compress output file")
+	filebaseOutput := filebase.String("output", "", "Output file name (required; should end with \".filebase.yml\" or \".filebase.yml.br\")")
+	filebaseCompress := filebase.Bool("compress", false, "Compress output file")
 	filebaseWhiteout := filebase.String("whiteout", "", "Path to a file containing a list of file names to whiteout")
 	filebaseContent := filebase.String("content", "", "Path to the content folder for updating")
 	filebaseQuiet := filebase.Bool("quiet", false, "Don't show progress")
@@ -230,7 +230,7 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 			os.Exit(1)
 		}
 		if *datapaxOutput == "" {
-			*datapaxOutput = fmt.Sprintf("%s.pax.xz", filepath.Base(strings.TrimSuffix(datapax.Arg(0), path.Ext(datapax.Arg(0)))))
+			*datapaxOutput = fmt.Sprintf("%s.pax.br", filepath.Base(strings.TrimSuffix(datapax.Arg(0), path.Ext(datapax.Arg(0)))))
 		}
 		if !runDatapax(datapax.Arg(0), *datapaxOutput, *datapaxQuiet) {
 			os.Exit(1)
@@ -241,7 +241,7 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 			fmt.Println("Error: The \"-output\" option is required; it is an option that is not an option and this dichotomy shall haunt you for the rest of your life")
 			os.Exit(1)
 		}
-		if !runFilebase(filebase.Args(), *filebaseGRF, *filebaseOutput, *filebaseWhiteout, *filebaseContent, *filebaseXZ, *filebaseQuiet) {
+		if !runFilebase(filebase.Args(), *filebaseGRF, *filebaseOutput, *filebaseWhiteout, *filebaseContent, *filebaseCompress, *filebaseQuiet) {
 			os.Exit(1)
 		}
 	case "contentcheck":

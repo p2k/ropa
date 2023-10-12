@@ -28,10 +28,10 @@ import (
 	"ropa/grf"
 	"strings"
 
-	xz "github.com/remyoudompheng/go-liblzma"
+	"github.com/andybalholm/brotli"
 )
 
-const silenceWavXZBase64 = "/Td6WFoAAATm1rRGAgAhARwAAAAQz1jM4AV5AFZdACkSROskvC1gTK0BOTyNAvDlcmpMwjmyN5lmXCm3QgWT68hgF1HDB5Y/RcN0+2qZ3MT+gNgvb2HdqFmsvDnvAXHjHB800tCXwCBtsHT23wdjv7BKONkAAAAA7OR0ZLGHlhQAAXL6CgAAAI/QhuixxGf7AgAAAAAEWVo="
+const silenceWavBRBase64 = "scgrAH+kBmviXBmhksPztu1hlV0mMbJ5Zz+RNMRriGZSGCtswAFrxAkOggnAFXDUKTcjkduB/3DW2+srwMAgWKEfTBTpYD0gKowkswsM/bpq47yLszRF+DmhQw=="
 
 func runBeamsonly(grfFilePaths []string, beamsonlyGRFPath string) bool {
 	silence := make(map[string]bool)
@@ -58,20 +58,16 @@ func runBeamsonly(grfFilePaths []string, beamsonlyGRFPath string) bool {
 		return false
 	}
 
-	silenceWavXZ, err := base64.StdEncoding.DecodeString(silenceWavXZBase64)
+	silenceWavBR, err := base64.StdEncoding.DecodeString(silenceWavBRBase64)
 	if err != nil {
 		panic(err)
 	}
-	silenceWav, err := xz.NewReader(bytes.NewBuffer(silenceWavXZ))
-	if err != nil {
-		panic(err)
-	}
+	silenceWav := brotli.NewReader(bytes.NewBuffer(silenceWavBR))
 
 	var h *grf.FileHeader
 	for fn := range silence {
 		if h == nil {
 			h, err = ar.Put(fn, silenceWav, 9)
-			silenceWav.Close()
 			if err != nil {
 				ar.Close()
 				fmt.Println("Error:", err)
