@@ -24,6 +24,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"compress/zlib"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -36,10 +37,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"ropa/grf"
+	"ropa/zopfli"
 	"sort"
 	"strings"
 
-	"github.com/andybalholm/brotli"
 	"github.com/dustin/go-humanize"
 	"github.com/dustin/go-humanize/english"
 	"github.com/schollz/progressbar/v3"
@@ -119,26 +120,33 @@ type filebaseGRF interface {
 	Get(name string, w io.Writer) (int64, error)
 }
 
-func (e *filebaseEntry) writeContentIfNeeded(contentFolderPath string, h grf.FileHeaderHash, r io.Reader) error {
+func (e *filebaseEntry) writeContentIfNeeded(contentFolderPath string, h grf.FileHeaderHash, d []byte, compress int) error {
 	contentPath := filepath.Join(contentFolderPath, h.Hex())
 	_, err := os.Stat(contentPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			level := brotli.BestCompression
 			if strings.HasSuffix(e.cmppath, ".mp3") || strings.HasSuffix(e.cmppath, ".grf") {
-				level = brotli.BestSpeed
+				compress = 0
 			}
 			w, err := os.Create(contentPath)
 			if err != nil {
 				return err
 			}
 			defer w.Close()
-			brc := brotli.NewWriterLevel(w, level)
-			if err != nil {
-				return err
+			if compress < 10 {
+				var zc *zlib.Writer
+				zc, err = zlib.NewWriterLevel(w, compress)
+				if err != nil {
+					return err
+				}
+				_, err = zc.Write(d)
+				if err == nil {
+					err = zc.Close()
+				}
+			} else {
+				d = zopfli.Zlib(d, compress, d)
+				_, err = w.Write(d)
 			}
-			defer brc.Close()
-			_, err = io.Copy(brc, r)
 			return err
 		} else {
 			return err
@@ -147,7 +155,8 @@ func (e *filebaseEntry) writeContentIfNeeded(contentFolderPath string, h grf.Fil
 	return nil
 }
 
-type filebaseWriter struct {
+type filebaseBuilder struct {
+	w       *bytes.Buffer
 	indent  [][]byte
 	lastspl []string
 	sp      []byte
@@ -155,39 +164,17 @@ type filebaseWriter struct {
 	lf      []byte
 	wo      []byte
 	q       *regexp.Regexp
-	f       *os.File
-	c       *brotli.Writer
-	w       io.Writer
 }
 
-func newFilebaseWriter(filebaseFilePath string, compress bool) *filebaseWriter {
-	w := &filebaseWriter{
+func newFilebaseBuilder() *filebaseBuilder {
+	w := &filebaseBuilder{
+		w:      &bytes.Buffer{},
 		indent: make([][]byte, 16),
 		sp:     []byte{' '},
 		co:     []byte{':'},
 		lf:     []byte{'\n'},
 		wo:     []byte{' ', '~', '\n'},
 		q:      regexp.MustCompile(`^\s|^-\s|^[[{,&*!?|>#%@"']|\s#|:\s|\s$|^\+?\d*(\.\d*)?$`),
-	}
-	f, err := os.Create(filebaseFilePath)
-	if err != nil {
-		fmt.Println("Error while creating filebase file:", err)
-		return nil
-	}
-	w.f = f
-	w.w = f
-
-	if compress {
-		c := brotli.NewWriterLevel(f, brotli.BestCompression)
-		w.c = c
-		w.w = c
-	}
-
-	_, err = w.w.Write([]byte("type: ROPAFilebase/v1\n"))
-	if err != nil {
-		f.Close()
-		fmt.Println("Error while writing to filebase file:", err)
-		return nil
 	}
 
 	master := make([]byte, 32)
@@ -197,22 +184,33 @@ func newFilebaseWriter(filebaseFilePath string, compress bool) *filebaseWriter {
 	for i := 0; i < 16; i++ {
 		w.indent[i] = master[:(i+1)*2]
 	}
+
+	w.w.Write([]byte("type: ROPAFilebase/v1\n"))
+
 	return w
 }
 
-func (w *filebaseWriter) close() {
-	if w.c != nil {
-		w.c.Close()
-		w.c = nil
+func (w *filebaseBuilder) write(filebaseFilePath string) string {
+	f, err := os.Create(filebaseFilePath)
+	if err != nil {
+		return fmt.Sprint("Error while creating filebase file:", err)
 	}
-	if w.f != nil {
-		w.f.Close()
-		w.f = nil
+	defer f.Close()
+
+	data := w.w.Bytes()
+	if strings.HasSuffix(filebaseFilePath, ".gz") {
+		data = zopfli.Gzip(data, 15, data)
 	}
-	w.w = nil
+
+	_, err = f.Write(data)
+	if err != nil {
+		return fmt.Sprint("Error while writing filebase file:", err)
+	}
+
+	return "All done."
 }
 
-func (w *filebaseWriter) writeQuotedIfNeeded(s string) error {
+func (w *filebaseBuilder) writeQuotedIfNeeded(s string) error {
 	if len(s) == 0 || w.q.MatchString(s) {
 		b, err := json.Marshal(s)
 		if err != nil {
@@ -226,7 +224,7 @@ func (w *filebaseWriter) writeQuotedIfNeeded(s string) error {
 	return err
 }
 
-func (w *filebaseWriter) writePath(pathspl []string) error {
+func (w *filebaseBuilder) writePath(pathspl []string) error {
 	m := len(w.lastspl)
 	n := len(pathspl)
 	var err error
@@ -259,17 +257,17 @@ func (w *filebaseWriter) writePath(pathspl []string) error {
 	return nil
 }
 
-func (w *filebaseWriter) writeEmpty() error {
+func (w *filebaseBuilder) writeEmpty() error {
 	_, err := w.w.Write(w.lf)
 	return err
 }
 
-func (w *filebaseWriter) writeWhiteout() error {
+func (w *filebaseBuilder) writeWhiteout() error {
 	_, err := w.w.Write(w.wo)
 	return err
 }
 
-func (w *filebaseWriter) writeHash(h grf.FileHeaderHash) error {
+func (w *filebaseBuilder) writeHash(h grf.FileHeaderHash) error {
 	_, err := w.w.Write(w.sp)
 	if err != nil {
 		return err
@@ -282,19 +280,19 @@ func (w *filebaseWriter) writeHash(h grf.FileHeaderHash) error {
 	return err
 }
 
-func (w *filebaseWriter) writeRoot() error {
+func (w *filebaseBuilder) writeRoot() error {
 	_, err := w.w.Write([]byte("root:\n"))
 	w.lastspl = nil
 	return err
 }
 
-func (w *filebaseWriter) writeGRF() error {
+func (w *filebaseBuilder) writeGRF() error {
 	_, err := w.w.Write([]byte("grf:\n"))
 	w.lastspl = nil
 	return err
 }
 
-func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath, whiteoutFilePath, contentFolderPath string, compress, quiet bool) bool {
+func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath, whiteoutFilePath, contentFolderPath string, compress int, quiet bool) bool {
 	hasher, err := blake2b.New256(nil)
 	if err != nil {
 		fmt.Println("Error while creating hasher:", err)
@@ -610,11 +608,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 		)
 	}
 
-	fbw := newFilebaseWriter(filebaseFilePath, compress)
-	if fbw == nil {
-		return false
-	}
-	defer fbw.close()
+	fbw := newFilebaseBuilder()
 
 	var h grf.FileHeaderHash
 
@@ -688,7 +682,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 			hasher.Reset()
 
 			if writeContent {
-				err = e.writeContentIfNeeded(contentFolderPath, h, bufo)
+				err = e.writeContentIfNeeded(contentFolderPath, h, bufo.Bytes(), compress)
 				if err != nil {
 					if bar != nil {
 						bar.Exit()
@@ -755,7 +749,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 					fmt.Printf("Error while retrieving hash of \"%s\": %s\n", e.realpath, err)
 					return false
 				}
-				e.writeContentIfNeeded(contentFolderPath, h, bufo)
+				e.writeContentIfNeeded(contentFolderPath, h, bufo.Bytes(), compress)
 				if err != nil {
 					if bar != nil {
 						bar.Exit()
@@ -785,12 +779,20 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 	}
 
 	if bar != nil {
+		bar.Describe("Writing filebase")
+	} else {
+		fmt.Println("Writing filebase...")
+	}
+
+	finalMessage := fbw.write(filebaseFilePath)
+
+	if bar != nil {
 		bar.Finish()
 		bar.Exit()
 		fmt.Println()
 	}
-	fmt.Println("All done.")
-	return true
+	fmt.Println(finalMessage)
+	return finalMessage == "All done."
 }
 
 func runContentcheck(contentFolderPath string) {
@@ -807,8 +809,12 @@ func runContentcheck(contentFolderPath string) {
 			if err != nil {
 				return err
 			}
-			brr := brotli.NewReader(r)
-			_, err = io.Copy(hasher, brr)
+			zr, err := zlib.NewReader(r)
+			if err != nil {
+				r.Close()
+				return err
+			}
+			_, err = io.Copy(hasher, zr)
 			r.Close()
 			if err != nil {
 				fmt.Println(path)

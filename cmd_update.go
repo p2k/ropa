@@ -45,7 +45,7 @@ type updateEntry struct {
 	linkpath  string
 }
 
-func runUpdate(grfFilePath string, inputPatterns []string, level int, pipeline, quiet bool) bool {
+func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipeline, quiet bool) bool {
 	cwd, err := os.Getwd()
 	if err != nil {
 		fmt.Println("Error while getting current directory:", err)
@@ -207,7 +207,7 @@ func runUpdate(grfFilePath string, inputPatterns []string, level int, pipeline, 
 		}
 
 		if pipeline {
-			arp := grf.NewPipeline(ar, runtime.NumCPU(), level)
+			arp := grf.NewPipeline(ar, runtime.NumCPU(), compress)
 			var pc chan int64
 			if bar != nil {
 				pc = make(chan int64)
@@ -265,7 +265,7 @@ func runUpdate(grfFilePath string, inputPatterns []string, level int, pipeline, 
 						fmt.Printf("Error while opening file \"%s\": %s\n", e.realpath, err)
 						return false
 					}
-					h, err := ar.Put(filepath.ToSlash(e.realpath), f, level)
+					h, err := ar.Put(filepath.ToSlash(e.realpath), f, compress)
 					if bar != nil {
 						bar.Add64(int64(h.Size))
 					}

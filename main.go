@@ -49,7 +49,7 @@ func printUsage() {
    checksum   Calculate checksums for a GRF file's contents
    verify     Verify the contents of a GRF file
    optimize   Optimize a GRF file
-   datapax    Build data.pax.br
+   recompress Recompress a GRF file
    filebase   Build a filebase
    beamsonly  Build the beams-only GRF
 `, os.Args[0])
@@ -80,7 +80,7 @@ Output files can contain glob patterns. Folders are extracted recursively.`)
 	setSubcommandUsage(extract, `<grf file> <input files...>
 Input files can contain glob patterns. Folders are added recursively.`)
 	updateDelete := update.Bool("delete", false, "Delete files inside the archive instead of updating")
-	updateLevel := update.Int("level", 9, "Compression level (default 9)")
+	updateCompress := update.Int("compress", 9, "Compression level (default 9)")
 	updateNopipeline := update.Bool("nopipeline", false, "Does not use a pipeline for inserting files (saves memory)")
 	updateQuiet := update.Bool("quiet", false, "Don't show progress")
 
@@ -105,7 +105,7 @@ Input files can contain glob patterns. Folders are added recursively.`)
 	recompress := flag.NewFlagSet("recompress", flag.ExitOnError)
 	setSubcommandUsage(recompress, "<grf file>")
 	recompressOutput := recompress.String("output", "", "Output file name (default same as input")
-	recompressLevel := recompress.Int("level", 9, "Compression level (default 9)")
+	recompressLevel := recompress.Int("level", 15, "Compression level (default 15)")
 	recompressNopipeline := recompress.Bool("nopipeline", false, "Does not use a pipeline for inserting files (saves memory)")
 	recompressQuiet := recompress.Bool("quiet", false, "Don't show progress")
 
@@ -113,8 +113,8 @@ Input files can contain glob patterns. Folders are added recursively.`)
 	setSubcommandUsage(filebase, `[<input files...>]
 Input files can contain glob patterns. Folders are added recursively. GRF files are not ignored on these paths and will be added as regular files, so be careful; also see the "-grf" option.`)
 	filebaseGRF := filebase.String("grf", "", "Path to a GRF file or folder to be used as its root")
-	filebaseOutput := filebase.String("output", "", "Output file name (required; should end with \".filebase.yml\" or \".filebase.yml.br\")")
-	filebaseCompress := filebase.Bool("compress", false, "Compress output file")
+	filebaseOutput := filebase.String("output", "", "Output file name (required; should end with \".filebase.yml\" or \".filebase.yml.gz\")")
+	filebaseCompress := filebase.Int("compress", 15, "Compression level (default 15)")
 	filebaseWhiteout := filebase.String("whiteout", "", "Path to a file containing a list of file names to whiteout")
 	filebaseContent := filebase.String("content", "", "Path to the content folder for updating")
 	filebaseQuiet := filebase.Bool("quiet", false, "Don't show progress")
@@ -185,7 +185,7 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 				os.Exit(1)
 			}
 		} else {
-			if !runUpdate(args[0], args[1:], *updateLevel, !*updateNopipeline, *updateQuiet) {
+			if !runUpdate(args[0], args[1:], *updateCompress, !*updateNopipeline, *updateQuiet) {
 				os.Exit(1)
 			}
 		}

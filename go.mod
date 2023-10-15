@@ -3,7 +3,6 @@ module ropa
 go 1.19
 
 require (
-	github.com/andybalholm/brotli v1.0.5
 	github.com/dustin/go-humanize v1.0.1
 	github.com/schollz/progressbar/v3 v3.13.1
 	golang.org/x/crypto v0.7.0

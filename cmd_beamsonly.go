@@ -22,16 +22,14 @@
 package main
 
 import (
-	"bytes"
 	"encoding/base64"
 	"fmt"
 	"ropa/grf"
 	"strings"
-
-	"github.com/andybalholm/brotli"
 )
 
-const silenceWavBRBase64 = "scgrAH+kBmviXBmhksPztu1hlV0mMbJ5Zz+RNMRriGZSGCtswAFrxAkOggnAFXDUKTcjkduB/3DW2+srwMAgWKEfTBTpYD0gKowkswsM/bpq47yLszRF+DmhQw=="
+const silenceWavZBase64 = "eNoL8nRzK2JlYAh3DHNNyy1REGBgYGAEQqUwBgaXNQwMTAwCDD6ewSFSQHFPPzd/z2C3ED4g2yexLM3UQs/IUs/QwIAhJbEkUYeVgQgwCkbBKBgFowAA9mEOpA=="
+const silenceWavSize = 1402
 
 func runBeamsonly(grfFilePaths []string, beamsonlyGRFPath string) bool {
 	silence := make(map[string]bool)
@@ -58,16 +56,15 @@ func runBeamsonly(grfFilePaths []string, beamsonlyGRFPath string) bool {
 		return false
 	}
 
-	silenceWavBR, err := base64.StdEncoding.DecodeString(silenceWavBRBase64)
+	silenceWavZ, err := base64.StdEncoding.DecodeString(silenceWavZBase64)
 	if err != nil {
 		panic(err)
 	}
-	silenceWav := brotli.NewReader(bytes.NewBuffer(silenceWavBR))
 
 	var h *grf.FileHeader
 	for fn := range silence {
 		if h == nil {
-			h, err = ar.Put(fn, silenceWav, 9)
+			h, err = ar.RawPutBytes(fn, silenceWavZ, silenceWavSize, grf.FileFlag)
 			if err != nil {
 				ar.Close()
 				fmt.Println("Error:", err)
