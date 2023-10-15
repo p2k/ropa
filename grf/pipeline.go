@@ -25,11 +25,13 @@ import (
 	"bytes"
 	"compress/zlib"
 	"io"
+	"ropa/zopfli"
 )
 
 type pipelineWorker struct {
 	in    *bytes.Buffer
-	out   *bytes.Buffer
+	out   []byte
+	outp  int
 	err   error
 	name  string
 	lname string
@@ -47,7 +49,7 @@ type pipelineWorker struct {
 func newPipelineWorker(compress int) *pipelineWorker {
 	pw := &pipelineWorker{
 		in:    &bytes.Buffer{},
-		out:   &bytes.Buffer{},
+		out:   make([]byte, 0, 65536),
 		empty: make(chan bool, 1),
 		ready: make(chan bool),
 		done:  make(chan bool, 1),
@@ -59,21 +61,48 @@ func newPipelineWorker(compress int) *pipelineWorker {
 
 func (pw *pipelineWorker) work(compress int) {
 	defer close(pw.done)
-	w, err := zlib.NewWriterLevel(pw.out, compress)
-	if err != nil {
-		panic(err)
-	}
-	for range pw.ready {
-		if pw.lname == "" && pw.flags != 0 && pw.err == nil {
-			pw.out.Reset()
-			w.Reset(pw.out)
-			_, pw.err = io.Copy(w, pw.in)
-			if pw.err == nil {
-				pw.err = w.Close()
-			}
+	if compress < 10 {
+		w, err := zlib.NewWriterLevel(pw, compress)
+		if err != nil {
+			panic(err)
 		}
-		pw.done <- true
+		for range pw.ready {
+			if pw.lname == "" && pw.flags != 0 && pw.err == nil {
+				pw.outp = 0
+				w.Reset(pw)
+				_, pw.err = io.Copy(w, pw.in)
+				if pw.err == nil {
+					pw.err = w.Close()
+				}
+			}
+			pw.done <- true
+		}
+	} else {
+		for range pw.ready {
+			if pw.lname == "" && pw.flags != 0 && pw.err == nil {
+				pw.out = zopfli.Zlib(pw.in.Bytes(), compress, pw.out)
+			}
+			pw.done <- true
+		}
 	}
+}
+
+func (pw *pipelineWorker) Write(p []byte) (n int, err error) {
+	n = len(p)
+	l := pw.outp + n
+	c := cap(pw.out)
+	if l <= c {
+		pw.out = pw.out[:l]
+		copy(pw.out[pw.outp:l], p)
+	} else if len(pw.out) < c {
+		pw.out = pw.out[:c]
+		d := copy(pw.out[pw.outp:c], p)
+		pw.out = append(pw.out, p[d:]...)
+	} else {
+		pw.out = append(pw.out, p...)
+	}
+	pw.outp += n
+	return
 }
 
 // Pipeline offers a way to write files to an Archive in parallel.
@@ -95,7 +124,10 @@ type Pipeline struct {
 
 // NewPipeline creates a new pipeline with the given archive and compression
 // setting.
-func NewPipeline(ar *Archive, size, compress int) *Pipeline {
+//
+// Values for compress > 9 will use Zopfli compression with the given number of
+// iterations; 15 is the recommended default for this.
+func NewPipeline(ar *Archive, size int, compress int) *Pipeline {
 	p := &Pipeline{
 		nocompress: compress == 0,
 		size:       size,
@@ -118,7 +150,7 @@ func NewPipeline(ar *Archive, size, compress int) *Pipeline {
 						if pw.lname != "" {
 							_, pw.err = ar.Link(pw.name, pw.lname)
 						} else {
-							_, pw.err = ar.RawPut(pw.name, pw.out, uint32(pw.size), pw.flags)
+							_, pw.err = ar.RawPutBytes(pw.name, pw.out, uint32(pw.size), pw.flags)
 							p.processed += pw.size
 							if p.pc != nil {
 								p.pc <- p.processed
@@ -204,8 +236,8 @@ func (p *Pipeline) Put(name string, r io.Reader, compress bool) bool {
 		pw.size, pw.err = io.Copy(pw.in, r)
 	} else {
 		pw.flags = 0
-		pw.out.Reset()
-		pw.size, pw.err = io.Copy(pw.out, r)
+		pw.outp = 0
+		pw.size, pw.err = io.Copy(pw, r)
 	}
 	pw.ready <- true
 	return true

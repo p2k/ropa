@@ -80,6 +80,7 @@ Output files can contain glob patterns. Folders are extracted recursively.`)
 	setSubcommandUsage(extract, `<grf file> <input files...>
 Input files can contain glob patterns. Folders are added recursively.`)
 	updateDelete := update.Bool("delete", false, "Delete files inside the archive instead of updating")
+	updateLevel := update.Int("level", 9, "Compression level (default 9)")
 	updateNopipeline := update.Bool("nopipeline", false, "Does not use a pipeline for inserting files (saves memory)")
 	updateQuiet := update.Bool("quiet", false, "Don't show progress")
 
@@ -101,10 +102,12 @@ Input files can contain glob patterns. Folders are added recursively.`)
 	optimizeDefrag := optimize.Bool("defrag", false, "Defragmentation")
 	optimizeQuiet := optimize.Bool("quiet", false, "Don't show progress")
 
-	datapax := flag.NewFlagSet("datapax", flag.ExitOnError)
-	setSubcommandUsage(datapax, "<path to data.grf>")
-	datapaxOutput := datapax.String("output", "", "Output file name (default \"<input file>.pax.br\")")
-	datapaxQuiet := datapax.Bool("quiet", false, "Don't show progress")
+	recompress := flag.NewFlagSet("recompress", flag.ExitOnError)
+	setSubcommandUsage(recompress, "<grf file>")
+	recompressOutput := recompress.String("output", "", "Output file name (default same as input")
+	recompressLevel := recompress.Int("level", 9, "Compression level (default 9)")
+	recompressNopipeline := recompress.Bool("nopipeline", false, "Does not use a pipeline for inserting files (saves memory)")
+	recompressQuiet := recompress.Bool("quiet", false, "Don't show progress")
 
 	filebase := flag.NewFlagSet("filebase", flag.ExitOnError)
 	setSubcommandUsage(filebase, `[<input files...>]
@@ -182,7 +185,7 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 				os.Exit(1)
 			}
 		} else {
-			if !runUpdate(args[0], args[1:], !*updateNopipeline, *updateQuiet) {
+			if !runUpdate(args[0], args[1:], *updateLevel, !*updateNopipeline, *updateQuiet) {
 				os.Exit(1)
 			}
 		}
@@ -222,18 +225,25 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 		if !runOptimize(optimize.Arg(0), *optimizeDedup, *optimizeSort, *optimizeDefrag, *optimizeQuiet) {
 			os.Exit(1)
 		}
-	case "datapax":
-		datapax.Parse(os.Args[2:])
-		if datapax.NArg() < 1 {
+	case "recompress":
+		recompress.Parse(os.Args[2:])
+		if recompress.NArg() < 1 {
 			fmt.Println("Error: missing path to GRF file")
-			datapax.Usage()
+			recompress.Usage()
 			os.Exit(1)
 		}
-		if *datapaxOutput == "" {
-			*datapaxOutput = fmt.Sprintf("%s.pax.br", filepath.Base(strings.TrimSuffix(datapax.Arg(0), path.Ext(datapax.Arg(0)))))
+		if *recompressOutput == "" {
+			*recompressOutput = recompress.Arg(0)
 		}
-		if !runDatapax(datapax.Arg(0), *datapaxOutput, *datapaxQuiet) {
+		tmpRecompressOutput := *recompressOutput
+		if recompress.Arg(0) == tmpRecompressOutput {
+			tmpRecompressOutput = fmt.Sprintf("%s_recompress_.grf", filepath.Base(strings.TrimSuffix(recompress.Arg(0), path.Ext(recompress.Arg(0)))))
+		}
+		if !runRecompress(recompress.Arg(0), tmpRecompressOutput, *recompressLevel, !*recompressNopipeline, *recompressQuiet) {
 			os.Exit(1)
+		}
+		if tmpRecompressOutput != *recompressOutput {
+			os.Rename(tmpRecompressOutput, *recompressOutput)
 		}
 	case "filebase":
 		filebase.Parse(os.Args[2:])

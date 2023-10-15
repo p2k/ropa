@@ -36,6 +36,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"ropa/zopfli"
 	"strings"
 	"sync"
 
@@ -630,21 +631,36 @@ func (a *Archive) RawPut(name string, r io.Reader, uncompressedSize uint32, flag
 	return a.finalizePut(name, uncompressedSize, flags)
 }
 
+// RawPutBytes inserts or replaces a file in the GRF directly.
+//
+// The given bytes need to already be compressed correctly.
+// No hashing is performed.
+func (a *Archive) RawPutBytes(name string, b []byte, uncompressedSize uint32, flags uint8) (*FileHeader, error) {
+	a.m.Lock()
+	defer a.m.Unlock()
+
+	err := a.preparePut(name)
+	if err != nil {
+		return nil, err
+	}
+	_, err = a.file.Write(b)
+	if err != nil {
+		return nil, err
+	}
+	return a.finalizePut(name, uncompressedSize, flags)
+}
+
 // Put inserts or replaces a file in the GRF.
 //
 // If the file already exists, its original data will remain in the GRF but
 // becomes inaccessible (if no other header points to it). The returned header
 // can be used to set flags or create hard links. The last parameter can be
-// used to set the compression level 0-9. It is recommended to keep it at 9.
+// used to set the compression level. Values > 9 will use Zopfli compression
+// with the given number of iterations; 15 is the recommended default for this.
 func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, error) {
 	a.m.Lock()
 	defer a.m.Unlock()
 
-	if compress < 0 {
-		compress = 0
-	} else if compress > 9 {
-		compress = 9
-	}
 	hasher, err := blake2b.New256(nil)
 	if err != nil {
 		return nil, err
@@ -654,23 +670,38 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 		return nil, err
 	}
 	t := io.TeeReader(bufio.NewReader(r), hasher)
-	var w io.WriteCloser
+	var s int64
 	var flags uint8
-	if compress > 0 {
-		flags = FileFlag
-		w, err = zlib.NewWriterLevel(a.file, compress)
+	if compress < 10 {
+		var w io.WriteCloser
+		if compress != 0 {
+			flags = FileFlag
+			w, err = zlib.NewWriterLevel(a.file, compress)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			w = a.file
+		}
+		s, err = io.Copy(w, t)
 		if err != nil {
 			return nil, err
 		}
+		if compress != 0 {
+			err = w.Close()
+			if err != nil {
+				return nil, err
+			}
+		}
 	} else {
-		w = a.file
-	}
-	s, err := io.Copy(w, t)
-	if err != nil {
-		return nil, err
-	}
-	if compress > 0 {
-		err = w.Close()
+		w := &bytes.Buffer{}
+		s, err = io.Copy(w, t)
+		if err != nil {
+			return nil, err
+		}
+		b := w.Bytes()
+		b = zopfli.Zlib(b, compress, b)
+		_, err = a.file.Write(b)
 		if err != nil {
 			return nil, err
 		}
