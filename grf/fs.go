@@ -253,6 +253,39 @@ func (a *Archive) Open(name string) (fs.File, error) {
 	return f, nil
 }
 
+// OpenRaw opens the named file inside the GRF without decompressing.
+//
+// Opening more than one file can be detrimental to the overall speed since a
+// seek has to be performed for each context switch. This will not update the
+// file's hash.
+func (a *Archive) OpenRaw(name string) (fs.File, error) {
+	a.m.RLock()
+	defer a.m.RUnlock()
+
+	if a.entriesByName == nil {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+	h := a.entriesByName[name]
+	if h != nil && h.Deleted {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+	if h == nil {
+		// Maybe a folder
+		entries, err := a.doReadDir(name)
+		if err != nil {
+			return nil, &fs.PathError{Op: "open", Path: name, Err: err}
+		}
+		return &ArchivedFile{dirname: path.Base(name), entries: entries}, nil
+	}
+
+	a.file.Seek(int64(h.Offset)+46, io.SeekStart)
+	lr := io.LimitReader(a.file, int64(h.CompressedSize))
+	f := &ArchivedFile{a: a, h: h, lr: lr.(*io.LimitedReader), tr: lr}
+	a.lf = f
+
+	return f, nil
+}
+
 // ReadDir reads the named virtual directory and returns a list of directory
 // entries sorted by filename.
 //

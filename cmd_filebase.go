@@ -47,6 +47,17 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	r.n += n
+	return n, err
+}
+
 type filebaseEntry struct {
 	realpath   string
 	cmppath    string
@@ -121,7 +132,7 @@ type filebaseGRF interface {
 }
 
 func (e *filebaseEntry) writeContentIfNeeded(contentFolderPath string, h grf.FileHeaderHash, d []byte, compress int) error {
-	contentPath := filepath.Join(contentFolderPath, h.Hex())
+	contentPath := filepath.Join(contentFolderPath, fmt.Sprintf("%s%08x", h.Hex(), e.size))
 	_, err := os.Stat(contentPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -267,12 +278,12 @@ func (w *filebaseBuilder) writeWhiteout() error {
 	return err
 }
 
-func (w *filebaseBuilder) writeHash(h grf.FileHeaderHash) error {
+func (w *filebaseBuilder) writeHashAndSize(h grf.FileHeaderHash, s int64) error {
 	_, err := w.w.Write(w.sp)
 	if err != nil {
 		return err
 	}
-	_, err = w.w.Write([]byte(h.Hex()))
+	_, err = w.w.Write([]byte(fmt.Sprintf("%s%08x", h.Hex(), s)))
 	if err != nil {
 		return err
 	}
@@ -697,7 +708,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 			if bar != nil {
 				bar.Add64(e.size)
 			}
-			fbw.writeHash(h)
+			fbw.writeHashAndSize(h, e.size)
 		}
 	}
 
@@ -774,7 +785,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				}
 			}
 
-			fbw.writeHash(h)
+			fbw.writeHashAndSize(h, e.size)
 		}
 	}
 
@@ -814,13 +825,15 @@ func runContentcheck(contentFolderPath string) {
 				r.Close()
 				return err
 			}
-			_, err = io.Copy(hasher, zr)
+			cr := &countingReader{r: zr}
+			_, err = io.Copy(hasher, cr)
 			r.Close()
+			expected := fmt.Sprintf("%s%08x", hex.EncodeToString(hasher.Sum(nil)), cr.n)
 			if err != nil {
-				fmt.Println(path)
+				fmt.Println(path, "- error:", err)
 				err = os.Remove(path)
-			} else if hex.EncodeToString(hasher.Sum(nil)) != filepath.Base(path) {
-				fmt.Println(path)
+			} else if expected != filepath.Base(path) {
+				fmt.Println(path, "!=", expected)
 				err = os.Remove(path)
 			}
 			hasher.Reset()
