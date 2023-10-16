@@ -22,7 +22,6 @@
 package grf
 
 import (
-	"bufio"
 	"compress/zlib"
 	"context"
 	"fmt"
@@ -54,23 +53,23 @@ func (h *FileHeader) seekAndHash(file io.ReadSeekCloser, hasher hash.Hash) error
 		return err
 	}
 	lr := io.LimitReader(file, int64(h.CompressedSize))
-	var r io.ReadCloser
+	var zr io.ReadCloser
 	if h.Flags&FileFlag != 0 {
-		r, err = zlib.NewReader(lr)
+		zr, err = zlib.NewReader(lr)
 		if err != nil {
 			return err
 		}
 	} else {
-		r = io.NopCloser(lr)
+		zr = io.NopCloser(lr)
 	}
-	_, err = io.Copy(hasher, bufio.NewReader(r))
-	r.Close()
-	if err != nil {
-		return err
-	}
+	_, err = io.Copy(hasher, zr)
+	zr.Close()
 	copy(h.Hash[:], hasher.Sum(nil))
 	hasher.Reset()
-	return nil
+	if err != nil {
+		h.Hash.SetZero()
+	}
+	return err
 }
 
 func (h *FileHeader) seekAndHashIfNeeded(file io.ReadSeekCloser, hasher hash.Hash) error {

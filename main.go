@@ -77,7 +77,7 @@ Output files can contain glob patterns. Folders are extracted recursively.`)
 	extractQuiet := extract.Bool("quiet", false, "Don't show progress")
 
 	update := flag.NewFlagSet("update", flag.ExitOnError)
-	setSubcommandUsage(extract, `<grf file> <input files...>
+	setSubcommandUsage(update, `<grf file> <input files...>
 Input files can contain glob patterns. Folders are added recursively.`)
 	updateDelete := update.Bool("delete", false, "Delete files inside the archive instead of updating")
 	updateCompress := update.Int("compress", 9, "Compression level (default 9)")

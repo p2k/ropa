@@ -110,7 +110,7 @@ func runChecksum(grfFilePath, checksumFilePath string, tryFix, quiet bool) bool 
 		fmt.Println()
 	}
 
-	if ierr, ok := err.(*grf.ArchiveIntegrityError); ok {
+	if ierr, ok := err.(*grf.ArchiveIntegrityError); ok && tryFix {
 		fmt.Println("Attempting to fix errors...")
 		var resolved []string
 		for n, e := range ierr.FileErrors {
