@@ -132,7 +132,7 @@ type filebaseGRF interface {
 }
 
 func (e *filebaseEntry) writeContentIfNeeded(contentFolderPath string, h grf.FileHeaderHash, d []byte, compress int) error {
-	contentPath := filepath.Join(contentFolderPath, fmt.Sprintf("%s%08x", h.Hex(), e.size))
+	contentPath := filepath.Join(contentFolderPath, fmt.Sprintf("%s-%08x.zl", h.Hex(), e.size))
 	_, err := os.Stat(contentPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -283,7 +283,7 @@ func (w *filebaseBuilder) writeHashAndSize(h grf.FileHeaderHash, s int64) error 
 	if err != nil {
 		return err
 	}
-	_, err = w.w.Write([]byte(fmt.Sprintf("%s%08x", h.Hex(), s)))
+	_, err = w.w.Write([]byte(fmt.Sprintf("%s-%08x", h.Hex(), s)))
 	if err != nil {
 		return err
 	}
@@ -828,7 +828,7 @@ func runContentcheck(contentFolderPath string) {
 			cr := &countingReader{r: zr}
 			_, err = io.Copy(hasher, cr)
 			r.Close()
-			expected := fmt.Sprintf("%s%08x", hex.EncodeToString(hasher.Sum(nil)), cr.n)
+			expected := fmt.Sprintf("%s-%08x.zl", hex.EncodeToString(hasher.Sum(nil)), cr.n)
 			if err != nil {
 				fmt.Println(path, "- error:", err)
 				err = os.Remove(path)

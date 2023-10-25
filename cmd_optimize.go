@@ -108,6 +108,7 @@ func runOptimize(grfFilePath string, dedup, sort, defrag, quiet bool) bool {
 				fmt.Println("Cancelled.")
 			} else {
 				fmt.Println("Error during deduplication:", err)
+				fmt.Println("See the \"checksum\" subcommand if you want to attempt repairing a damaged file.")
 			}
 			return false
 		}
@@ -178,6 +179,7 @@ func runOptimize(grfFilePath string, dedup, sort, defrag, quiet bool) bool {
 				fmt.Println("Cancelled.")
 			} else {
 				fmt.Println("Error during defragmentation:", err)
+				fmt.Println("See the \"checksum\" subcommand if you want to attempt repairing a damaged file. Note that defragmentation will not (further) damage a broken file.")
 			}
 			return false
 		}
