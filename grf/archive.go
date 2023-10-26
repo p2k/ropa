@@ -788,10 +788,10 @@ func (a *Archive) finalizePut(name string, uncompressedSize uint32, flags uint8)
 func (a *Archive) Link(name string, linkname string) (*FileHeader, error) {
 	a.m.RLock()
 	h := a.entriesByName[linkname]
+	a.m.RUnlock()
 	if h == nil || h.Deleted {
 		return nil, fs.ErrNotExist
 	}
-	a.m.RUnlock()
 	return a.LinkHeader(name, h), nil
 }
 

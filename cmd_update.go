@@ -39,6 +39,7 @@ import (
 )
 
 type updateEntry struct {
+	path      string
 	realpath  string
 	cmppath   string
 	isSymlink bool
@@ -94,8 +95,8 @@ func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipelin
 			fmt.Printf("Match pattern \"%s\" error: %s\n", pattern, err)
 			return false
 		}
-		for _, path := range matches {
-			err = filepath.WalkDir(path, func(path string, d fs.DirEntry, err error) error {
+		for _, rootpath := range matches {
+			err = filepath.WalkDir(rootpath, func(realpath string, d fs.DirEntry, err error) error {
 				if err != nil {
 					return err
 				}
@@ -104,7 +105,8 @@ func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipelin
 					return context.Canceled
 				default:
 				}
-				cmppath := filepath.ToSlash(strings.ToLower(path))
+				path := filepath.ToSlash(realpath)
+				cmppath := strings.ToLower(path)
 				if !d.IsDir() && !inputFilesSet[cmppath] && cmppath != "symlinks" {
 					fi, err := d.Info()
 					if err != nil {
@@ -112,7 +114,7 @@ func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipelin
 					}
 					nFiles++
 					totalSize += fi.Size()
-					inputFiles = append(inputFiles, &updateEntry{realpath: path, cmppath: cmppath})
+					inputFiles = append(inputFiles, &updateEntry{path: path, realpath: realpath, cmppath: cmppath})
 					inputFilesSet[cmppath] = true
 				}
 				return nil
@@ -146,7 +148,7 @@ func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipelin
 		for path, linkpath := range slf.GetAll() {
 			cmppath := strings.ToLower(path)
 			nSymlinks++
-			inputFiles = append(inputFiles, &updateEntry{realpath: path, cmppath: cmppath, isSymlink: true, linkpath: linkpath})
+			inputFiles = append(inputFiles, &updateEntry{path: path, cmppath: cmppath, isSymlink: true, linkpath: linkpath})
 		}
 	} else {
 		for _, pattern := range inputPatterns {
@@ -163,7 +165,7 @@ func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipelin
 					cmppath := strings.ToLower(path)
 					if !d.IsDir() && !inputFilesSet[cmppath] {
 						nSymlinks++
-						inputFiles = append(inputFiles, &updateEntry{realpath: path, cmppath: cmppath, isSymlink: true, linkpath: slf.Get(path)})
+						inputFiles = append(inputFiles, &updateEntry{path: path, cmppath: cmppath, isSymlink: true, linkpath: slf.Get(path)})
 						inputFilesSet[cmppath] = true
 					}
 					return nil
@@ -181,6 +183,33 @@ func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipelin
 	}
 
 	sort.Slice(inputFiles, func(i, j int) bool { return inputFiles[i].cmppath < inputFiles[j].cmppath })
+
+	// Fix symlink dependencies
+	if nSymlinks > 0 {
+		seenPaths := make(map[string]bool)
+		for i, e := range inputFiles {
+			cmplinkpath := strings.ToLower(e.linkpath)
+			for e.isSymlink && !seenPaths[cmplinkpath] {
+				for _, f := range inputFiles[i+1:] {
+					if f.cmppath == cmplinkpath {
+						if f.isSymlink {
+							e.linkpath = f.linkpath
+							cmplinkpath = strings.ToLower(f.linkpath)
+						} else {
+							e.realpath = f.realpath
+							e.linkpath = ""
+							e.isSymlink = false
+							f.linkpath = e.path
+							f.realpath = ""
+							f.isSymlink = true
+						}
+						break
+					}
+				}
+			}
+			seenPaths[e.cmppath] = true
+		}
+	}
 
 	if bar != nil {
 		bar.Clear()
@@ -232,13 +261,13 @@ func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipelin
 						arp.Wait()
 						return false
 					}
-					ok := arp.Put(filepath.ToSlash(e.realpath), f, true)
+					ok := arp.Put(e.path, f, true)
 					f.Close()
 					if !ok {
 						break
 					}
 				} else {
-					if !arp.Link(filepath.ToSlash(e.realpath), e.linkpath) {
+					if !arp.Link(e.path, e.linkpath) {
 						break
 					}
 				}
@@ -265,7 +294,7 @@ func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipelin
 						fmt.Printf("Error while opening file \"%s\": %s\n", e.realpath, err)
 						return false
 					}
-					h, err := ar.Put(filepath.ToSlash(e.realpath), f, compress)
+					h, err := ar.Put(e.path, f, compress)
 					if bar != nil {
 						bar.Add64(int64(h.Size))
 					}
@@ -279,7 +308,7 @@ func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipelin
 						return false
 					}
 				} else {
-					_, err = ar.Link(filepath.ToSlash(e.realpath), e.linkpath)
+					_, err = ar.Link(e.path, e.linkpath)
 					if err != nil {
 						if bar != nil {
 							bar.Exit()

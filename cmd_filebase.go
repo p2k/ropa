@@ -60,15 +60,11 @@ type filebaseEntry struct {
 type virtualGRF struct {
 	basePath string
 	h        hash.Hash
-	b        *bufio.Reader
-	t        io.Reader
 	hashMap  map[string]grf.FileHeaderHash
 }
 
 func newVirtualGRF(basePath string, hasher hash.Hash) *virtualGRF {
-	b := bufio.NewReader(nil)
-	t := io.TeeReader(b, hasher)
-	return &virtualGRF{basePath: basePath, h: hasher, b: b, t: t, hashMap: make(map[string]grf.FileHeaderHash)}
+	return &virtualGRF{basePath: basePath, h: hasher, hashMap: make(map[string]grf.FileHeaderHash)}
 }
 
 func (g *virtualGRF) Hash(name string) (grf.FileHeaderHash, error) {
@@ -81,8 +77,8 @@ func (g *virtualGRF) Hash(name string) (grf.FileHeaderHash, error) {
 	if err != nil {
 		return h, err
 	}
-	g.b.Reset(r)
-	_, err = io.Copy(g.h, g.b)
+	g.h.Reset()
+	_, err = io.Copy(g.h, r)
 	r.Close()
 	if err != nil {
 		g.h.Reset()
@@ -100,8 +96,7 @@ func (g *virtualGRF) Get(name string, w io.Writer) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	g.b.Reset(r)
-	n, err := io.Copy(w, g.t)
+	n, err := io.Copy(w, r)
 	r.Close()
 	if err != nil {
 		g.h.Reset()
@@ -625,8 +620,6 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 			fmt.Println("Error while writing to filebase:", err)
 			return false
 		}
-		bufi := bufio.NewReader(nil)
-		tee := io.TeeReader(bufi, hasher)
 		bufo := &bytes.Buffer{}
 		var ell io.Writer
 		if writeContent {
@@ -663,8 +656,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				fmt.Printf("Error while opening file \"%s\": %s\n", e.realpath, err)
 				return false
 			}
-			bufi.Reset(r)
-			_, err = io.Copy(ell, tee)
+			_, err = io.Copy(ell, r)
 			r.Close()
 			if err != nil {
 				if bar != nil {
