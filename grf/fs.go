@@ -31,7 +31,7 @@ import (
 	"sort"
 	"time"
 
-	"golang.org/x/crypto/blake2b"
+	"lukechampine.com/blake3"
 )
 
 // ArchivedFileInfo implements the FileInfo interface for files within a GRF.
@@ -241,10 +241,7 @@ func (a *Archive) Open(name string) (fs.File, error) {
 	}
 
 	if h.Hash.IsZero() {
-		f.hs, err = blake2b.New256(nil)
-		if err != nil {
-			f.hs = nil
-		}
+		f.hs = blake3.New(32, nil)
 		f.tr = io.TeeReader(r, f.hs)
 	} else {
 		f.tr = r

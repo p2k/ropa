@@ -44,19 +44,8 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/dustin/go-humanize/english"
 	"github.com/schollz/progressbar/v3"
-	"golang.org/x/crypto/blake2b"
+	"lukechampine.com/blake3"
 )
-
-type countingReader struct {
-	r io.Reader
-	n int
-}
-
-func (r *countingReader) Read(p []byte) (int, error) {
-	n, err := r.r.Read(p)
-	r.n += n
-	return n, err
-}
 
 type filebaseEntry struct {
 	realpath   string
@@ -304,11 +293,7 @@ func (w *filebaseBuilder) writeGRF() error {
 }
 
 func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath, whiteoutFilePath, contentFolderPath string, compress int, quiet bool) bool {
-	hasher, err := blake2b.New256(nil)
-	if err != nil {
-		fmt.Println("Error while creating hasher:", err)
-		return false
-	}
+	hasher := blake3.New(32, nil)
 
 	writeContent := false
 	if contentFolderPath != "" {
@@ -488,6 +473,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 			fmt.Println("Listing GRF contents...")
 		}
 
+		var err error
 		grfFilePath, err = filepath.Abs(grfFilePath)
 		if err != nil {
 			if bar != nil {
@@ -630,7 +616,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 		} else {
 			fmt.Println("Building for root...")
 		}
-		err = fbw.writeRoot()
+		err := fbw.writeRoot()
 		if err != nil {
 			if bar != nil {
 				bar.Exit()
@@ -719,7 +705,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 		} else {
 			fmt.Println("Building for GRF...")
 		}
-		err = fbw.writeGRF()
+		err := fbw.writeGRF()
 		if err != nil {
 			if bar != nil {
 				bar.Exit()
@@ -807,39 +793,36 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 }
 
 func runContentcheck(contentFolderPath string) {
-	hasher, err := blake2b.New256(nil)
-	if err == nil {
-		err = filepath.WalkDir(contentFolderPath, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() {
-				return nil
-			}
-			r, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			zr, err := zlib.NewReader(r)
-			if err != nil {
-				r.Close()
-				return err
-			}
-			cr := &countingReader{r: zr}
-			_, err = io.Copy(hasher, cr)
-			r.Close()
-			expected := fmt.Sprintf("%s-%08x.zl", hex.EncodeToString(hasher.Sum(nil)), cr.n)
-			if err != nil {
-				fmt.Println(path, "- error:", err)
-				err = os.Remove(path)
-			} else if expected != filepath.Base(path) {
-				fmt.Println(path, "!=", expected)
-				err = os.Remove(path)
-			}
-			hasher.Reset()
+	hasher := blake3.New(32, nil)
+	err := filepath.WalkDir(contentFolderPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
 			return err
-		})
-	}
+		}
+		if d.IsDir() {
+			return nil
+		}
+		r, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		zr, err := zlib.NewReader(r)
+		if err != nil {
+			r.Close()
+			return err
+		}
+		size, err := io.Copy(hasher, zr)
+		r.Close()
+		expected := fmt.Sprintf("%s-%08x.zl", hex.EncodeToString(hasher.Sum(nil)), size)
+		if err != nil {
+			fmt.Println(path, "- error:", err)
+			err = os.Remove(path)
+		} else if expected != filepath.Base(path) {
+			fmt.Println(path, "!=", expected)
+			err = os.Remove(path)
+		}
+		hasher.Reset()
+		return err
+	})
 	if err != nil {
 		fmt.Println("Error:", err)
 	} else {

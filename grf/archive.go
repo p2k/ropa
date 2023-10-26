@@ -40,8 +40,8 @@ import (
 	"strings"
 	"sync"
 
-	"golang.org/x/crypto/blake2b"
 	"golang.org/x/text/encoding/korean"
+	"lukechampine.com/blake3"
 )
 
 var (
@@ -76,14 +76,14 @@ func (e *ArchiveError) Error() string {
 	return e.msg
 }
 
-// FileHeaderHash represents the blake2b-256 hash of a file.
-type FileHeaderHash [blake2b.Size256]byte
+// FileHeaderHash represents the BLAKE3-256 hash of a file.
+type FileHeaderHash [32]byte
 
-// FileHeaderHashFromHex converts a hex string representation to a blake2b-256
+// FileHeaderHashFromHex converts a hex string representation to a BLAKE3-256
 // hash. Returns a zero hash on error.
 func FileHeaderHashFromHex(s string) FileHeaderHash {
 	var h FileHeaderHash
-	if n, err := hex.Decode(h[:], []byte(s)); err != nil && n == blake2b.Size256 {
+	if n, err := hex.Decode(h[:], []byte(s)); err != nil && n == 32 {
 		for i := 0; i < n; i++ {
 			h[i] = 0
 		}
@@ -192,7 +192,7 @@ type FileHeader struct {
 	// Deleted marks the file as deleted.
 	Deleted bool
 
-	// Hash is a blake2b hash of the file's contents.
+	// Hash is a BLAKE3-256 hash of the file's contents.
 	Hash FileHeaderHash
 }
 
@@ -661,11 +661,8 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 	a.m.Lock()
 	defer a.m.Unlock()
 
-	hasher, err := blake2b.New256(nil)
-	if err != nil {
-		return nil, err
-	}
-	err = a.preparePut(name)
+	hasher := blake3.New(32, nil)
+	err := a.preparePut(name)
 	if err != nil {
 		return nil, err
 	}
@@ -874,10 +871,7 @@ func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 	}
 	var hasher hash.Hash
 	if h.Hash.IsZero() {
-		hasher, err = blake2b.New256(nil)
-		if err != nil {
-			hasher = nil
-		}
+		hasher = blake3.New(32, nil)
 	}
 	lr := io.LimitReader(a.file, int64(h.CompressedSize))
 	var zr io.ReadCloser

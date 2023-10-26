@@ -26,7 +26,7 @@ import (
 	"io"
 	"sort"
 
-	"golang.org/x/crypto/blake2b"
+	"lukechampine.com/blake3"
 )
 
 // Sort will put all file headers in alphabetical order.
@@ -51,10 +51,7 @@ func (a *Archive) Sort() {
 // The operation can be cancelled using the context; progress in bytes can be
 // tracked through the channel.
 func (a *Archive) Dedup(ctx context.Context, progress chan<- int64) (bool, error) {
-	hasher, err := blake2b.New256(nil)
-	if err != nil {
-		return false, err
-	}
+	hasher := blake3.New(32, nil)
 
 	a.m.Lock()
 	defer a.m.Unlock()
@@ -81,7 +78,7 @@ func (a *Archive) Dedup(ctx context.Context, progress chan<- int64) (bool, error
 			h.Linkname = ""
 		}
 
-		err = h.seekAndHashIfNeeded(a.file, hasher)
+		err := h.seekAndHashIfNeeded(a.file, hasher)
 		if err != nil {
 			return false, err
 		}

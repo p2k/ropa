@@ -86,13 +86,13 @@ Input files can contain glob patterns. Folders are added recursively.`)
 
 	checksum := flag.NewFlagSet("checksum", flag.ExitOnError)
 	setSubcommandUsage(checksum, "<grf file>")
-	checksumOutput := checksum.String("output", "", "Output file name (default \"<input file>.b2b\")")
+	checksumOutput := checksum.String("output", "", "Output file name (default \"<input file>.b3\")")
 	checksumFix := checksum.Bool("fix", false, "Attempt to fix problems; will rewrite files as far as possible")
 	checksumQuiet := checksum.Bool("quiet", false, "Don't show progress")
 
 	verify := flag.NewFlagSet("verify", flag.ExitOnError)
 	setSubcommandUsage(verify, "<grf file>")
-	verifyChecksum := verify.String("checksum", "", "Checksum file name (default \"<input file>.b2b\")")
+	verifyChecksum := verify.String("checksum", "", "Checksum file name (default \"<input file>.b3\")")
 	verifyQuiet := verify.Bool("quiet", false, "Don't show progress")
 
 	optimize := flag.NewFlagSet("optimize", flag.ExitOnError)
@@ -104,7 +104,7 @@ Input files can contain glob patterns. Folders are added recursively.`)
 
 	recompress := flag.NewFlagSet("recompress", flag.ExitOnError)
 	setSubcommandUsage(recompress, "<grf file>")
-	recompressOutput := recompress.String("output", "", "Output file name (default same as input")
+	recompressOutput := recompress.String("output", "", "Output file name (default same as input)")
 	recompressLevel := recompress.Int("level", 15, "Compression level (default 15)")
 	recompressNopipeline := recompress.Bool("nopipeline", false, "Does not use a pipeline for inserting files (saves memory)")
 	recompressQuiet := recompress.Bool("quiet", false, "Don't show progress")
@@ -197,7 +197,7 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 			os.Exit(1)
 		}
 		if *checksumOutput == "" {
-			*checksumOutput = fmt.Sprintf("%s.b2b", filepath.Base(checksum.Arg(0)))
+			*checksumOutput = fmt.Sprintf("%s.b3", filepath.Base(checksum.Arg(0)))
 		}
 		if !runChecksum(checksum.Arg(0), *checksumOutput, *checksumFix, *checksumQuiet) {
 			os.Exit(1)
@@ -210,7 +210,7 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 			os.Exit(1)
 		}
 		if *verifyChecksum == "" {
-			*verifyChecksum = fmt.Sprintf("%s.b2b", filepath.Base(verify.Arg(0)))
+			*verifyChecksum = fmt.Sprintf("%s.b3", filepath.Base(verify.Arg(0)))
 		}
 		if !runVerify(verify.Arg(0), *verifyChecksum, *verifyQuiet) {
 			os.Exit(1)

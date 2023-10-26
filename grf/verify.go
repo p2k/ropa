@@ -30,7 +30,7 @@ import (
 	"io/fs"
 	"strings"
 
-	"golang.org/x/crypto/blake2b"
+	"lukechampine.com/blake3"
 )
 
 // ArchiveIntegrityError is returned on verification if there are problems with
@@ -79,7 +79,7 @@ func (h *FileHeader) seekAndHashIfNeeded(file io.ReadSeekCloser, hasher hash.Has
 	return nil
 }
 
-// Hash returns the blake2b hash of a file within the GRF.
+// Hash returns the BLAKE3-256 hash of a file within the GRF.
 //
 // If the hash already has been computed, this will return the cached value.
 func (a *Archive) Hash(name string) (FileHeaderHash, error) {
@@ -98,12 +98,8 @@ func (a *Archive) Hash(name string) (FileHeaderHash, error) {
 		return h.Hash, nil
 	}
 
-	hasher, err := blake2b.New256(nil)
-	if err != nil {
-		return FileHeaderHash{}, err
-	}
-
-	err = h.seekAndHash(a.file, hasher)
+	hasher := blake3.New(32, nil)
+	err := h.seekAndHash(a.file, hasher)
 	if err != nil {
 		return FileHeaderHash{}, err
 	}
@@ -118,10 +114,7 @@ func (a *Archive) Hash(name string) (FileHeaderHash, error) {
 // files could not be read properly, the function will return both a result and
 // an ArchiveIntegrityError.
 func (a *Archive) HashAll(ctx context.Context, progress chan<- int64) (map[string]FileHeaderHash, error) {
-	hasher, err := blake2b.New256(nil)
-	if err != nil {
-		return nil, err
-	}
+	hasher := blake3.New(32, nil)
 
 	a.m.Lock()
 	defer a.m.Unlock()
@@ -149,7 +142,7 @@ func (a *Archive) HashAll(ctx context.Context, progress chan<- int64) (map[strin
 			h.Linkname = ""
 		}
 
-		err = h.seekAndHashIfNeeded(a.file, hasher)
+		err := h.seekAndHashIfNeeded(a.file, hasher)
 		if err != nil {
 			fileErrors[h.Name] = err
 		} else {
@@ -182,10 +175,7 @@ func (a *Archive) HashAll(ctx context.Context, progress chan<- int64) (map[strin
 // files could not be read properly, the function will return both a result and
 // an ArchiveIntegrityError.
 func (a *Archive) VerifyAll(ctx context.Context, progress chan<- int64, hashMap map[string]FileHeaderHash) ([]string, error) {
-	hasher, err := blake2b.New256(nil)
-	if err != nil {
-		return nil, err
-	}
+	hasher := blake3.New(32, nil)
 
 	a.m.Lock()
 	defer a.m.Unlock()
@@ -211,7 +201,7 @@ func (a *Archive) VerifyAll(ctx context.Context, progress chan<- int64, hashMap 
 
 			x := hashMap[h.Name]
 			if !x.IsZero() {
-				err = h.seekAndHashIfNeeded(a.file, hasher)
+				err := h.seekAndHashIfNeeded(a.file, hasher)
 				if err != nil {
 					fileErrors[h.Name] = err
 				}
