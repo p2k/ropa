@@ -81,11 +81,9 @@ func (g *virtualGRF) Hash(name string) (grf.FileHeaderHash, error) {
 	_, err = io.Copy(g.h, r)
 	r.Close()
 	if err != nil {
-		g.h.Reset()
 		return h, err
 	}
 	copy(h[:], g.h.Sum(nil))
-	g.h.Reset()
 	g.hashMap[name] = h
 
 	return h, nil
@@ -96,15 +94,14 @@ func (g *virtualGRF) Get(name string, w io.Writer) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	g.h.Reset()
 	n, err := io.Copy(w, r)
 	r.Close()
 	if err != nil {
-		g.h.Reset()
 		return 0, err
 	}
 	var h grf.FileHeaderHash
 	copy(h[:], g.h.Sum(nil))
-	g.h.Reset()
 	g.hashMap[name] = h
 
 	return n, nil
@@ -656,7 +653,8 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				fmt.Printf("Error while opening file \"%s\": %s\n", e.realpath, err)
 				return false
 			}
-			_, err = io.Copy(ell, r)
+			hasher.Reset()
+			_, err = io.Copy(ell, io.TeeReader(r, hasher))
 			r.Close()
 			if err != nil {
 				if bar != nil {
@@ -668,7 +666,6 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 			}
 
 			copy(h[:], hasher.Sum(nil))
-			hasher.Reset()
 
 			if writeContent {
 				err = e.writeContentIfNeeded(contentFolderPath, h, bufo.Bytes(), compress)
@@ -802,6 +799,7 @@ func runContentcheck(contentFolderPath string) {
 			r.Close()
 			return err
 		}
+		hasher.Reset()
 		size, err := io.Copy(hasher, zr)
 		r.Close()
 		expected := fmt.Sprintf("%s-%08x.zl", hex.EncodeToString(hasher.Sum(nil)), size)
@@ -812,7 +810,6 @@ func runContentcheck(contentFolderPath string) {
 			fmt.Println(path, "!=", expected)
 			err = os.Remove(path)
 		}
-		hasher.Reset()
 		return err
 	})
 	if err != nil {
