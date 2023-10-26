@@ -95,7 +95,7 @@ func (g *virtualGRF) Get(name string, w io.Writer) (int64, error) {
 		return 0, err
 	}
 	g.h.Reset()
-	n, err := io.Copy(w, r)
+	n, err := io.Copy(w, io.TeeReader(r, g.h))
 	r.Close()
 	if err != nil {
 		return 0, err
