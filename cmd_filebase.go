@@ -165,7 +165,7 @@ func newFilebaseBuilder() *filebaseBuilder {
 		sp:     []byte{' '},
 		co:     []byte{':'},
 		lf:     []byte{'\n'},
-		wo:     []byte{' ', '~', '\n'},
+		wo:     []byte(" 0000000000000000000000000000000000000000000000000000000000000000-00000000\n"),
 		q:      regexp.MustCompile(`^\s|^-\s|^[[{,&*!?|>#%@"']|\s#|:\s|\s$|^\+?\d*(\.\d*)?$`),
 	}
 
