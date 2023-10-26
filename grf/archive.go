@@ -901,6 +901,30 @@ func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 	return s, nil
 }
 
+// Rename renames (moves) oldname to newname in the GRF.
+func (a *Archive) Rename(oldname string, newname string) bool {
+	a.m.Lock()
+	defer a.m.Unlock()
+
+	oldh := a.entriesByName[oldname]
+	if oldh == nil || oldh.Deleted {
+		return false
+	}
+
+	delete(a.entriesByName, oldname)
+	newh := a.entriesByName[newname]
+	if newh != nil {
+		newh.Deleted = true
+		a.FilesCount--
+	}
+
+	oldh.Name = newname
+	a.entriesByName[newname] = oldh
+
+	a.hasChanges = true
+	return true
+}
+
 // Delete removes a file from the GRF.
 //
 // The file is not physically removed, just its file header won't be written on
