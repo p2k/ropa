@@ -35,6 +35,7 @@ type pipelineWorker struct {
 	err   error
 	name  string
 	lname string
+	raw   bool
 	size  int64
 	flags uint8
 
@@ -67,7 +68,7 @@ func (pw *pipelineWorker) work(compress int) {
 			panic(err)
 		}
 		for range pw.ready {
-			if pw.lname == "" && pw.flags != 0 && pw.err == nil {
+			if pw.lname == "" && !pw.raw && pw.flags != 0 && pw.err == nil {
 				pw.outp = 0
 				w.Reset(pw)
 				_, pw.err = io.Copy(w, pw.in)
@@ -79,7 +80,7 @@ func (pw *pipelineWorker) work(compress int) {
 		}
 	} else {
 		for range pw.ready {
-			if pw.lname == "" && pw.flags != 0 && pw.err == nil {
+			if pw.lname == "" && !pw.raw && pw.flags != 0 && pw.err == nil {
 				pw.out = zopfli.Zlib(pw.in.Bytes(), compress, pw.out)
 			}
 			pw.done <- true
@@ -215,6 +216,7 @@ func (p *Pipeline) Link(name string, linkname string) bool {
 	}
 	pw.name = name
 	pw.lname = linkname
+	pw.raw = false
 	pw.ready <- true
 	return true
 }
@@ -230,6 +232,7 @@ func (p *Pipeline) Put(name string, r io.Reader, compress bool) bool {
 	}
 	pw.name = name
 	pw.lname = ""
+	pw.raw = false
 	if compress && !p.nocompress {
 		pw.flags = FileFlag
 		pw.in.Reset()
@@ -239,6 +242,27 @@ func (p *Pipeline) Put(name string, r io.Reader, compress bool) bool {
 		pw.outp = 0
 		pw.size, pw.err = io.Copy(pw, r)
 	}
+	pw.ready <- true
+	return true
+}
+
+// RawPut queues the insertion or replacement of a compressed file directly.
+//
+// The given data stream needs to already be compressed correctly.
+// Will buffer the entire file in memory. Blocks until a worker is available.
+// Returns `false` if the pipeline is broken and accepts no more jobs.
+func (p *Pipeline) RawPut(name string, uncompressedSize int64, r io.Reader) bool {
+	pw := p.nextEmptyWorker()
+	if pw == nil {
+		return false
+	}
+	pw.name = name
+	pw.lname = ""
+	pw.raw = true
+	pw.flags = FileFlag
+	pw.outp = 0
+	_, pw.err = io.Copy(pw, r)
+	pw.size = uncompressedSize
 	pw.ready <- true
 	return true
 }
