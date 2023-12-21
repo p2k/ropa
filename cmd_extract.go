@@ -33,8 +33,8 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
-func runExtract(grfFilePath string, outputPatterns []string, outputFolderPath string, ignoreErrors, quiet bool) bool {
-	ar, err := grf.Open(grfFilePath, true)
+func runExtract(grfFilePath string, outputPatterns []string, outputFolderPath string, ignoreErrors, koreanFilenames, quiet bool) bool {
+	ar, err := grf.Open(grfFilePath, true, koreanFilenames)
 	if err != nil {
 		fmt.Println("Error while opening GRF file:", err)
 		return false

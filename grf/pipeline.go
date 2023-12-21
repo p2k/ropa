@@ -24,12 +24,16 @@ package grf
 import (
 	"bytes"
 	"compress/zlib"
+	"hash"
 	"io"
 	"ropa/zopfli"
+
+	"lukechampine.com/blake3"
 )
 
 type pipelineWorker struct {
 	in    *bytes.Buffer
+	inh   FileHeaderHash
 	out   []byte
 	outp  int
 	err   error
@@ -108,6 +112,9 @@ func (pw *pipelineWorker) Write(p []byte) (n int, err error) {
 
 // Pipeline offers a way to write files to an Archive in parallel.
 //
+// Input data is fully copied into memory before performing compression or raw
+// writing. One buffer is maintained per worker.
+//
 // As long as the pipeline is active, the Archive should not be touched by other
 // means. The input methods should also not be called from more than one thread.
 type Pipeline struct {
@@ -117,6 +124,7 @@ type Pipeline struct {
 	nocompress bool
 	size       int
 	inp        int
+	hs         hash.Hash
 
 	processed int64
 	pc        chan<- int64
@@ -132,6 +140,7 @@ func NewPipeline(ar *Archive, size int, compress int) *Pipeline {
 	p := &Pipeline{
 		nocompress: compress == 0,
 		size:       size,
+		hs:         blake3.New(32, nil),
 		allDone:    make(chan bool),
 	}
 	for i := 0; i < p.size; i++ {
@@ -151,7 +160,11 @@ func NewPipeline(ar *Archive, size int, compress int) *Pipeline {
 						if pw.lname != "" {
 							_, pw.err = ar.Link(pw.name, pw.lname)
 						} else {
-							_, pw.err = ar.RawPutBytes(pw.name, pw.out, uint32(pw.size), pw.flags)
+							var h *FileHeader
+							h, pw.err = ar.RawPutBytes(pw.name, pw.out, uint32(pw.size), pw.flags)
+							if !pw.inh.IsZero() {
+								h.Hash = pw.inh
+							}
 							p.processed += pw.size
 							if p.pc != nil {
 								p.pc <- p.processed
@@ -236,11 +249,14 @@ func (p *Pipeline) Put(name string, r io.Reader, compress bool) bool {
 	if compress && !p.nocompress {
 		pw.flags = FileFlag
 		pw.in.Reset()
-		pw.size, pw.err = io.Copy(pw.in, r)
+		pw.size, pw.err = io.Copy(pw.in, io.TeeReader(r, p.hs))
+		pw.inh.SetWithHasher(p.hs)
+		p.hs.Reset()
 	} else {
 		pw.flags = 0
 		pw.outp = 0
 		pw.size, pw.err = io.Copy(pw, r)
+		pw.inh.SetZero()
 	}
 	pw.ready <- true
 	return true
@@ -263,6 +279,7 @@ func (p *Pipeline) RawPut(name string, uncompressedSize int64, r io.Reader) bool
 	pw.outp = 0
 	_, pw.err = io.Copy(pw, r)
 	pw.size = uncompressedSize
+	pw.inh.SetZero()
 	pw.ready <- true
 	return true
 }

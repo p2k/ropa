@@ -35,7 +35,7 @@ func runBeamsonly(grfFilePaths []string, beamsonlyGRFPath string) bool {
 	silence := make(map[string]bool)
 	for _, path := range grfFilePaths {
 		fmt.Println("Loading", path, "...")
-		ar, err := grf.Open(path, true)
+		ar, err := grf.Open(path, true, true)
 		if err != nil {
 			fmt.Println("Error:", err)
 			return false
@@ -50,7 +50,7 @@ func runBeamsonly(grfFilePaths []string, beamsonlyGRFPath string) bool {
 	}
 
 	fmt.Println("Creating", beamsonlyGRFPath, "...")
-	ar, err := grf.Create(beamsonlyGRFPath)
+	ar, err := grf.Create(beamsonlyGRFPath, true)
 	if err != nil {
 		fmt.Println("Error:", err)
 		return false

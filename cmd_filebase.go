@@ -24,10 +24,12 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"compress/zlib"
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -83,7 +85,7 @@ func (g *virtualGRF) Hash(name string) (grf.FileHeaderHash, error) {
 	if err != nil {
 		return h, err
 	}
-	copy(h[:], g.h.Sum(nil))
+	h.SetWithHasher(g.h)
 	g.hashMap[name] = h
 
 	return h, nil
@@ -101,7 +103,7 @@ func (g *virtualGRF) Get(name string, w io.Writer) (int64, error) {
 		return 0, err
 	}
 	var h grf.FileHeaderHash
-	copy(h[:], g.h.Sum(nil))
+	h.SetWithHasher(g.h)
 	g.hashMap[name] = h
 
 	return n, nil
@@ -112,11 +114,11 @@ type filebaseGRF interface {
 	Get(name string, w io.Writer) (int64, error)
 }
 
-func (e *filebaseEntry) writeContentIfNeeded(contentFolderPath string, h grf.FileHeaderHash, d []byte, compress int) error {
+func (e *filebaseEntry) writeContentIfNeeded(contentFolderPath string, h grf.FileHeaderHash, s hash.Hash, d []byte, compress int) error {
 	contentPath := filepath.Join(contentFolderPath, fmt.Sprintf("%s-%08x.zl", h.Hex(), e.size))
-	_, err := os.Stat(contentPath)
-	if err != nil {
-		if os.IsNotExist(err) {
+	fi, err := os.Stat(contentPath)
+	if err != nil || fi.Size() == 0 {
+		if err == nil || os.IsNotExist(err) {
 			if strings.HasSuffix(e.cmppath, ".mp3") || strings.HasSuffix(e.cmppath, ".grf") {
 				compress = 0
 			}
@@ -127,7 +129,11 @@ func (e *filebaseEntry) writeContentIfNeeded(contentFolderPath string, h grf.Fil
 			defer w.Close()
 			if compress < 10 {
 				var zc *zlib.Writer
-				zc, err = zlib.NewWriterLevel(w, compress)
+				if s != nil {
+					zc, err = zlib.NewWriterLevel(io.MultiWriter(w, s), compress)
+				} else {
+					zc, err = zlib.NewWriterLevel(w, compress)
+				}
 				if err != nil {
 					return err
 				}
@@ -137,10 +143,23 @@ func (e *filebaseEntry) writeContentIfNeeded(contentFolderPath string, h grf.Fil
 				}
 			} else {
 				d = zopfli.Zlib(d, compress, d)
+				if s != nil {
+					s.Write(d)
+				}
 				_, err = w.Write(d)
 			}
 			return err
 		} else {
+			return err
+		}
+	} else if s != nil {
+		w, err := os.Open(contentPath)
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(s, w)
+		w.Close()
+		if err != nil {
 			return err
 		}
 	}
@@ -148,7 +167,7 @@ func (e *filebaseEntry) writeContentIfNeeded(contentFolderPath string, h grf.Fil
 }
 
 type filebaseBuilder struct {
-	w       *bytes.Buffer
+	b       *bytes.Buffer
 	indent  [][]byte
 	lastspl []string
 	sp      []byte
@@ -159,8 +178,8 @@ type filebaseBuilder struct {
 }
 
 func newFilebaseBuilder() *filebaseBuilder {
-	w := &filebaseBuilder{
-		w:      &bytes.Buffer{},
+	b := &filebaseBuilder{
+		b:      &bytes.Buffer{},
 		indent: make([][]byte, 16),
 		sp:     []byte{' '},
 		co:     []byte{':'},
@@ -174,27 +193,30 @@ func newFilebaseBuilder() *filebaseBuilder {
 		master[i] = ' '
 	}
 	for i := 0; i < 16; i++ {
-		w.indent[i] = master[:(i+1)*2]
+		b.indent[i] = master[:(i+1)*2]
 	}
 
-	w.w.Write([]byte("type: ROPAFilebase/v1\n"))
+	b.b.Write([]byte("type: ROPAFilebase/v1\n"))
 
-	return w
+	return b
 }
 
-func (w *filebaseBuilder) write(filebaseFilePath string) string {
+// Note: if the file name ends with .gz, you can only write once since the
+// buffer is used to hold compressed data
+func (b *filebaseBuilder) write(filebaseFilePath string) string {
 	f, err := os.Create(filebaseFilePath)
 	if err != nil {
 		return fmt.Sprint("Error while creating filebase file:", err)
 	}
 	defer f.Close()
 
-	data := w.w.Bytes()
+	data := b.b.Bytes()
 	if strings.HasSuffix(filebaseFilePath, ".gz") {
 		data = zopfli.Gzip(data, 15, data)
 	}
 
 	_, err = f.Write(data)
+	f.Close()
 	if err != nil {
 		return fmt.Sprint("Error while writing filebase file:", err)
 	}
@@ -202,91 +224,197 @@ func (w *filebaseBuilder) write(filebaseFilePath string) string {
 	return "All done."
 }
 
-func (w *filebaseBuilder) writeQuotedIfNeeded(s string) error {
-	if len(s) == 0 || w.q.MatchString(s) {
-		b, err := json.Marshal(s)
+func (b *filebaseBuilder) writeQuotedIfNeeded(s string) error {
+	if len(s) == 0 || b.q.MatchString(s) {
+		bs, err := json.Marshal(s)
 		if err != nil {
 			return err
 		}
-		_, err = w.w.Write(b)
+		_, err = b.b.Write(bs)
 		return err
 	}
 
-	_, err := w.w.Write([]byte(s))
+	_, err := b.b.Write([]byte(s))
 	return err
 }
 
-func (w *filebaseBuilder) writePath(pathspl []string) error {
-	m := len(w.lastspl)
+func (b *filebaseBuilder) writePath(pathspl []string) error {
+	m := len(b.lastspl)
 	n := len(pathspl)
 	var err error
 	for i := 0; i < n; i++ {
-		if i < m && w.lastspl[i] == pathspl[i] {
+		if i < m && b.lastspl[i] == pathspl[i] {
 			continue
 		}
 
-		_, err = w.w.Write(w.indent[i])
+		_, err = b.b.Write(b.indent[i])
 		if err != nil {
 			return err
 		}
-		err = w.writeQuotedIfNeeded(pathspl[i])
+		err = b.writeQuotedIfNeeded(pathspl[i])
 		if err != nil {
 			return err
 		}
-		_, err = w.w.Write(w.co)
+		_, err = b.b.Write(b.co)
 		if err != nil {
 			return err
 		}
 		if i+1 < n {
-			_, err = w.w.Write(w.lf)
+			_, err = b.b.Write(b.lf)
 			if err != nil {
 				return err
 			}
 		}
 	}
 
-	w.lastspl = pathspl
+	b.lastspl = pathspl
 	return nil
 }
 
-func (w *filebaseBuilder) writeEmpty() error {
-	_, err := w.w.Write(w.lf)
+func (b *filebaseBuilder) writeEmpty() error {
+	_, err := b.b.Write(b.lf)
 	return err
 }
 
-func (w *filebaseBuilder) writeWhiteout() error {
-	_, err := w.w.Write(w.wo)
+func (b *filebaseBuilder) writeWhiteout() error {
+	_, err := b.b.Write(b.wo)
 	return err
 }
 
-func (w *filebaseBuilder) writeHashAndSize(h grf.FileHeaderHash, s int64) error {
-	_, err := w.w.Write(w.sp)
+func (b *filebaseBuilder) writeHashAndSize(h grf.FileHeaderHash, s int64) error {
+	_, err := b.b.Write(b.sp)
 	if err != nil {
 		return err
 	}
-	_, err = w.w.Write([]byte(fmt.Sprintf("%s-%08x", h.Hex(), s)))
+	_, err = b.b.Write([]byte(fmt.Sprintf("%s-%08x", h.Hex(), s)))
 	if err != nil {
 		return err
 	}
-	_, err = w.w.Write(w.lf)
+	_, err = b.b.Write(b.lf)
 	return err
 }
 
-func (w *filebaseBuilder) writeRoot() error {
-	_, err := w.w.Write([]byte("root:\n"))
-	w.lastspl = nil
+func (b *filebaseBuilder) writeRoot() error {
+	_, err := b.b.Write([]byte("root:\n"))
+	b.lastspl = nil
 	return err
 }
 
-func (w *filebaseBuilder) writeGRF() error {
-	_, err := w.w.Write([]byte("grf:\n"))
-	w.lastspl = nil
+func (b *filebaseBuilder) writeGRF() error {
+	_, err := b.b.Write([]byte("grf:\n"))
+	b.lastspl = nil
 	return err
 }
 
-func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath, whiteoutFilePath, contentFolderPath string, compress int, quiet bool) bool {
+type integrityMap struct {
+	b   *bytes.Buffer
+	s2c map[grf.FileHeaderHash]grf.FileHeaderHash
+}
+
+func newIntegrityMap() *integrityMap {
+	m := &integrityMap{
+		b:   &bytes.Buffer{},
+		s2c: make(map[grf.FileHeaderHash]grf.FileHeaderHash),
+	}
+
+	m.b.Write([]byte("type: ROPAIntegrityMap/v1\n"))
+	m.b.Write([]byte("s2c:\n"))
+
+	return m
+}
+
+func (m *integrityMap) read(integrityFilePath string) error {
+	if m.b.Len() > 0 {
+		m.b.Reset()
+	}
+
+	r, err := os.Open(integrityFilePath)
+	if err != nil {
+		return err
+	}
+	var scanner *bufio.Scanner
+	if strings.HasSuffix(integrityFilePath, ".gz") {
+		zr, err := gzip.NewReader(r)
+		if err != nil {
+			return err
+		}
+		scanner = bufio.NewScanner(zr)
+	} else {
+		scanner = bufio.NewScanner(r)
+	}
+	got_type := false
+	in_s2c := false
+	for scanner.Scan() {
+		t := scanner.Text()
+		if !in_s2c {
+			if strings.HasPrefix(t, "type:") {
+				if t == "type: ROPAIntegrityMap/v1\n" {
+					got_type = true
+				} else {
+					r.Close()
+					return errors.New("invalid integrity file type")
+				}
+				m.b.WriteString(t)
+			} else if got_type && t == "s2c:\n" {
+				in_s2c = true
+				m.b.WriteString(t)
+			}
+		} else if strings.HasPrefix(t, "  ") {
+			spl := strings.SplitN(t[2:len(t)-1], ": ", 2)
+			if len(spl) == 2 {
+				h1 := grf.FileHeaderHashFromHex(spl[0])
+				h2 := grf.FileHeaderHashFromHex(spl[0])
+				if !h1.IsZero() && !h2.IsZero() {
+					m.s2c[h1] = h2
+				}
+				m.b.WriteString(t)
+			}
+		} else {
+			in_s2c = false
+		}
+	}
+	r.Close()
+
+	return nil
+}
+
+// Note: if the file name ends with .gz, you can only write once since the
+// buffer is used to hold compressed data
+func (m *integrityMap) write(integrityFilePath string) string {
+	f, err := os.Create(integrityFilePath)
+	if err != nil {
+		return fmt.Sprint("Error while creating integrity file:", err)
+	}
+	defer f.Close()
+
+	data := m.b.Bytes()
+	if strings.HasSuffix(integrityFilePath, ".gz") {
+		data = zopfli.Gzip(data, 15, data)
+	}
+
+	_, err = f.Write(data)
+	f.Close()
+	if err != nil {
+		return fmt.Sprint("Error while writing integrity file:", err)
+	}
+
+	return "All done."
+}
+
+func (m *integrityMap) add(streamHasher hash.Hash, contentHash grf.FileHeaderHash) {
+	var streamHash grf.FileHeaderHash
+	streamHash.SetWithHasher(streamHasher)
+	if _, ok := m.s2c[streamHash]; !ok {
+		m.s2c[streamHash] = contentHash
+		m.b.Write([]byte(fmt.Sprintf("  %s: %s\n", streamHash, contentHash)))
+	}
+}
+
+func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath, whiteoutFilePath, contentFolderPath string, compress int, koreanFilenames, quiet bool) bool {
 	hasher := blake3.New(32, nil)
 
+	imap := newIntegrityMap()
+	imapPath := filepath.Join(contentFolderPath, "integrity.yml.gz")
 	writeContent := false
 	if contentFolderPath != "" {
 		cfi, err := os.Stat(contentFolderPath)
@@ -298,6 +426,14 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 			fmt.Println("Error: content folder path does not point to a folder")
 			return false
 		}
+
+		if _, err = os.Stat(imapPath); err == nil {
+			err = imap.read(imapPath)
+			if err != nil {
+				fmt.Println("Error: could not read integrity file")
+			}
+		}
+
 		writeContent = true
 	}
 
@@ -318,6 +454,32 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 			}))
 	} else {
 		fmt.Println("Listing files...")
+	}
+
+	grfIsDir := false
+	if grfFilePath != "" {
+		var err error
+		grfFilePath, err = filepath.Abs(grfFilePath)
+		if err != nil {
+			if bar != nil {
+				bar.Exit()
+				fmt.Println()
+			}
+			fmt.Println("Error while finding absolute path to GRF file:", err)
+			return false
+		}
+
+		grfFi, err := os.Stat(grfFilePath)
+		if err != nil {
+			if bar != nil {
+				bar.Exit()
+				fmt.Println()
+			}
+			fmt.Println("Error while statting GRF file:", err)
+			return false
+		}
+
+		grfIsDir = grfFi.IsDir()
 	}
 
 	sc := make(chan os.Signal, 1)
@@ -361,6 +523,13 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 					return err
 				}
 				pathspl := strings.Split(path, sep)
+				basename := pathspl[len(pathspl)-1]
+				if realpath == grfFilePath || basename == ".git" || basename == ".gitignore" {
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
 				if d.IsDir() {
 					nDirs++
 					inputFilesIndex[cmppath] = len(inputFiles)
@@ -465,31 +634,14 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 			fmt.Println("Listing GRF contents...")
 		}
 
-		var err error
-		grfFilePath, err = filepath.Abs(grfFilePath)
-		if err != nil {
-			if bar != nil {
-				bar.Exit()
-				fmt.Println()
+		if grfIsDir {
+			grfRelPath := grfFilePath
+			if filepath.Base(grfFilePath) == "data" { // pragmatic case
+				grfRelPath = filepath.Dir(grfFilePath)
 			}
-			fmt.Println("Error while finding absolute path to GRF file:", err)
-			return false
-		}
-
-		grfFi, err := os.Stat(grfFilePath)
-		if err != nil {
-			if bar != nil {
-				bar.Exit()
-				fmt.Println()
-			}
-			fmt.Println("Error while statting GRF file:", err)
-			return false
-		}
-
-		if grfFi.IsDir() {
-			fbar = newVirtualGRF(grfFilePath, hasher)
-			existingFiles := make(map[string]bool)
-			err = filepath.WalkDir(grfFilePath, func(path string, d fs.DirEntry, err error) error {
+			fbar = newVirtualGRF(grfRelPath, hasher)
+			existingFiles := make(map[string]int64)
+			err := filepath.WalkDir(grfFilePath, func(path string, d fs.DirEntry, err error) error {
 				if err != nil {
 					return err
 				}
@@ -502,19 +654,29 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				if err != nil {
 					return err
 				}
-				path, err = filepath.Rel(grfFilePath, path)
+				path, err = filepath.Rel(grfRelPath, path)
 				if err != nil {
 					return err
 				}
 				path = filepath.ToSlash(path)
-				cmppath := strings.ToLower(path)
-				if cmppath != "symlinks" && !d.IsDir() {
-					existingFiles[path] = true
-					pathspl := strings.Split(path, "/")
+				sanitizedPath := path
+				if !koreanFilenames {
+					sanitizedPath, err = grf.SanitizeFileName(path)
+					if err != nil {
+						return fmt.Errorf("problematic file name: %s - %w", path, err)
+					}
+				}
+				cmppath := strings.ToLower(sanitizedPath)
+				pathspl := strings.Split(sanitizedPath, "/")
+				basename := pathspl[len(pathspl)-1]
+				if basename != "symlinks" && basename != ".gitignore" && !d.IsDir() {
 					grfNFiles++
 					size := fi.Size()
+					existingFiles[sanitizedPath] = size
 					grfInputFiles = append(grfInputFiles, &filebaseEntry{realpath: path, cmppath: cmppath, pathspl: pathspl, size: size})
 					grfTotalUncompressed += size
+				} else if basename == ".git" && d.IsDir() {
+					return filepath.SkipDir
 				}
 				return nil
 			})
@@ -540,7 +702,22 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				return false
 			}
 			for name, target := range slf.GetAll() {
-				if !existingFiles[target] {
+				sanitizedName := name
+				sanitizedTarget := target
+				if !koreanFilenames {
+					sanitizedName, err = grf.SanitizeFileName(name)
+					if err != nil {
+						fmt.Printf("Error while listing symlinks: source file name \"%s\" could not be sanitized\n", name)
+						return false
+					}
+					sanitizedTarget, err = grf.SanitizeFileName(target)
+					if err != nil {
+						fmt.Printf("Error while listing symlinks: target file name \"%s\" could not be sanitized\n", target)
+						return false
+					}
+				}
+				size, ok := existingFiles[sanitizedTarget]
+				if !ok {
 					if bar != nil {
 						bar.Exit()
 						fmt.Println()
@@ -549,10 +726,16 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 					return false
 				}
 				grfNSymlinks++
-				grfInputFiles = append(grfInputFiles, &filebaseEntry{realpath: target, cmppath: name, pathspl: strings.Split(name, "/"), isSymlink: true})
+				grfInputFiles = append(grfInputFiles, &filebaseEntry{
+					realpath:  target,
+					cmppath:   sanitizedName,
+					pathspl:   strings.Split(sanitizedName, "/"),
+					size:      size,
+					isSymlink: true,
+				})
 			}
 		} else {
-			ar, err := grf.Open(grfFilePath, true)
+			ar, err := grf.Open(grfFilePath, true, true)
 			fbar = ar
 			if err != nil {
 				if bar != nil {
@@ -572,7 +755,13 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 					grfInputFiles = append(grfInputFiles, &filebaseEntry{realpath: name, cmppath: cmppath, pathspl: pathspl, size: int64(h.Size)})
 				} else {
 					grfNSymlinks++
-					grfInputFiles = append(grfInputFiles, &filebaseEntry{realpath: h.Linkname, cmppath: cmppath, pathspl: pathspl, size: int64(h.Size), isSymlink: true})
+					grfInputFiles = append(grfInputFiles, &filebaseEntry{
+						realpath:  h.Linkname,
+						cmppath:   cmppath,
+						pathspl:   pathspl,
+						size:      int64(h.Size),
+						isSymlink: true,
+					})
 				}
 				grfTotalUncompressed += int64(h.Size)
 			}
@@ -665,10 +854,11 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				return false
 			}
 
-			copy(h[:], hasher.Sum(nil))
+			h.SetWithHasher(hasher)
 
 			if writeContent {
-				err = e.writeContentIfNeeded(contentFolderPath, h, bufo.Bytes(), compress)
+				hasher.Reset()
+				err = e.writeContentIfNeeded(contentFolderPath, h, hasher, bufo.Bytes(), compress)
 				if err != nil {
 					if bar != nil {
 						bar.Exit()
@@ -676,6 +866,9 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 					}
 					fmt.Printf("Error while writing content \"%s\": %s\n", h.Hex(), err)
 					return false
+				}
+				if imap != nil {
+					imap.add(hasher, h)
 				}
 				bufo.Reset()
 			}
@@ -735,7 +928,8 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 					fmt.Printf("Error while retrieving hash of \"%s\": %s\n", e.realpath, err)
 					return false
 				}
-				e.writeContentIfNeeded(contentFolderPath, h, bufo.Bytes(), compress)
+				hasher.Reset()
+				err = e.writeContentIfNeeded(contentFolderPath, h, hasher, bufo.Bytes(), compress)
 				if err != nil {
 					if bar != nil {
 						bar.Exit()
@@ -743,6 +937,9 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 					}
 					fmt.Printf("Error while writing content \"%s\": %s\n", h.Hex(), err)
 					return false
+				}
+				if imap != nil {
+					imap.add(hasher, h)
 				}
 				bufo.Reset()
 				if bar != nil {
@@ -771,6 +968,14 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 	}
 
 	finalMessage := fbw.write(filebaseFilePath)
+	if finalMessage == "All done." && imap != nil {
+		if bar != nil {
+			bar.Describe("Writing integrity map")
+		} else {
+			fmt.Println("Writing integrity map...")
+		}
+		finalMessage = imap.write(imapPath)
+	}
 
 	if bar != nil {
 		bar.Finish()

@@ -52,6 +52,7 @@ func (a *Archive) Sort() {
 // tracked through the channel.
 func (a *Archive) Dedup(ctx context.Context, progress chan<- int64) (bool, error) {
 	hasher := blake3.New(32, nil)
+	streamHasher := blake3.New(32, nil)
 
 	a.m.Lock()
 	defer a.m.Unlock()
@@ -78,7 +79,7 @@ func (a *Archive) Dedup(ctx context.Context, progress chan<- int64) (bool, error
 			h.Linkname = ""
 		}
 
-		err := h.seekAndHashIfNeeded(a.file, hasher)
+		err := h.seekAndHashIfNeeded(a.file, hasher, streamHasher)
 		if err != nil {
 			return false, err
 		}

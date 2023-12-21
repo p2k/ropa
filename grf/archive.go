@@ -40,14 +40,17 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/korean"
 	"lukechampine.com/blake3"
 )
 
 var (
-	magicBytes   = append([]byte("Master of Magic"), 0)
-	euckrEncoder = korean.EUCKR.NewEncoder()
-	euckrDecoder = korean.EUCKR.NewDecoder()
+	magicBytes    = append([]byte("Master of Magic"), 0)
+	euckrEncoder  = korean.EUCKR.NewEncoder()
+	euckrDecoder  = korean.EUCKR.NewDecoder()
+	cp1252Encoder = charmap.Windows1252.NewEncoder()
+	cp1252Decoder = charmap.Windows1252.NewDecoder()
 )
 
 const (
@@ -65,6 +68,97 @@ func padding(s uint32) uint32 {
 		return 0
 	}
 	return 8 - m
+}
+
+// FileNameEncoder encodes a unicode string to the archive's internal format.
+type FileNameEncoder func(s string) ([]byte, error)
+
+// FileNameDecoder decodes the archive's internal format to a unicode string.
+type FileNameDecoder func(b []byte) (string, error)
+
+// SaneFileNameEncoder does the right thing and converts Korean characters using
+// the EUCKR code page as it is used by the original game developers.
+func SaneFileNameEncoder(s string) ([]byte, error) {
+	return euckrEncoder.Bytes([]byte(s))
+}
+
+// SaneFileNameDecoder does the right thing and converts Korean characters using
+// the EUCKR code page as it is used by the original game developers.
+func SaneFileNameDecoder(b []byte) (string, error) {
+	bb, err := euckrDecoder.Bytes(b)
+	if err != nil {
+		return "", err
+	}
+	return string(bb), nil
+}
+
+// InsaneFileNameEncoder turns messed up file names magically into the EUCKR
+// representation they should have.
+func InsaneFileNameEncoder(s string) ([]byte, error) {
+	t := []byte(s)
+	var subs map[int]byte
+	j := 0
+	for i, c := range s {
+		if c == 0x81 || c == 0x8d || c == 0x8f || c == 0x90 || c == 0x9d {
+			if subs == nil {
+				subs = make(map[int]byte)
+			}
+			subs[j] = byte(c)
+			t[i+1] = 0xa0
+		}
+		j++
+	}
+	t, err := cp1252Encoder.Bytes(t)
+	if err != nil {
+		return nil, err
+	}
+	for i, c := range subs {
+		t[i] = c
+	}
+	return t, nil
+}
+
+// InsaneFileNameDecoder takes perfectly fine file names in their EUCKR
+// representation and messes them up completely for no reason.
+func InsaneFileNameDecoder(b []byte) (string, error) {
+	t := b
+	var subs map[int]byte
+	for i, c := range b {
+		if c == 0x81 || c == 0x8d || c == 0x8f || c == 0x90 || c == 0x9d {
+			if subs == nil {
+				subs = make(map[int]byte)
+				t = make([]byte, len(b))
+				copy(t, b)
+			}
+			subs[i] = c
+			t[i] = 0xa0
+		}
+	}
+	t, err := cp1252Decoder.Bytes(t)
+	if err != nil {
+		return "", err
+	}
+	s := string(t)
+	if subs != nil {
+		j := 0
+		for i := range s {
+			if c, ok := subs[j]; ok {
+				t[i+1] = c
+			}
+			j++
+		}
+		return string(t), nil
+	}
+	return s, nil
+}
+
+// SanitizeFileName restores the original Korean characters back from garbage.
+func SanitizeFileName(s string) (string, error) {
+	ks, err := InsaneFileNameEncoder(s)
+	if err != nil {
+		return "", err
+	}
+	return SaneFileNameDecoder(ks)
 }
 
 // ArchiveError is returned to indicate problems within the GRF file.
@@ -194,6 +288,9 @@ type FileHeader struct {
 
 	// Hash is a BLAKE3-256 hash of the file's contents.
 	Hash FileHeaderHash
+
+	// StreamHash is a BLAKE3-256 hash of the file's raw/compressed data.
+	StreamHash FileHeaderHash
 }
 
 // EndOffset calculates the file's end position including alignment
@@ -207,13 +304,14 @@ func (h *FileHeader) spaceBetween(other *FileHeader) uint32 {
 
 // WriteTo writes the file header to the given writer.
 //
-// If the file is marked as deleted, this will return io.ErrUnexpectedEOF
-func (h *FileHeader) WriteTo(w io.Writer) (int64, error) {
+// Uses the given encoder to encode the file name. If the file is marked as
+// deleted, this will return io.ErrUnexpectedEOF.
+func (h *FileHeader) WriteTo(w io.Writer, e FileNameEncoder) (int64, error) {
 	if h.Deleted {
 		return 0, io.ErrUnexpectedEOF
 	}
 	bName := strings.Join(strings.Split(h.Name, "/"), "\\")
-	kName, err := euckrEncoder.Bytes([]byte(bName))
+	kName, err := e(bName)
 	if err != nil {
 		return 0, err
 	}
@@ -235,16 +333,18 @@ func (h *FileHeader) WriteTo(w io.Writer) (int64, error) {
 }
 
 // ReadFrom reads a file header from the given buffered reader.
-func (h *FileHeader) ReadFrom(r *bufio.Reader) error {
+//
+// Uses the given decoder to decode the file name.
+func (h *FileHeader) ReadFrom(r *bufio.Reader, d FileNameDecoder) error {
 	kName, err := r.ReadBytes(0)
 	if err != nil {
 		return err
 	}
-	bName, err := euckrDecoder.Bytes(kName[:len(kName)-1])
+	sName, err := d(kName[:len(kName)-1])
 	if err != nil {
 		return err
 	}
-	h.Name = strings.Join(strings.Split(string(bName), "\\"), "/")
+	h.Name = strings.Join(strings.Split(sName, "\\"), "/")
 	v := make([]byte, 17)
 	_, err = io.ReadFull(r, v)
 	if err != nil {
@@ -267,6 +367,12 @@ type Archive struct {
 	//
 	// Changing this value has no effect.
 	Name string
+
+	// KoreanFilenames indicates if the EUCKR text encoding is used for files
+	// inside the GRF. If not, the Windows-1252 codepage is used.
+	//
+	// Changing this will likely produce errors when finalizing the archive.
+	KoreanFilenames bool
 
 	// IsReadonly reflects if the file has been opened read-only.
 	//
@@ -308,11 +414,14 @@ type Archive struct {
 	hasChanges   bool
 	insertOffset uint32
 	m            sync.RWMutex
-	lf           *ArchivedFile
+	lf           *ArchivedFile // last used archived file
 }
 
 // Create creates and opens a new GRF file at the given path.
-func Create(name string) (*Archive, error) {
+//
+// The second parameter controls whether you want to use Korean filenames or
+// (mangled) filenames using the Windows-1252 codepage.
+func Create(name string, koreanFilenames bool) (*Archive, error) {
 	name, err := filepath.Abs(name)
 	if err != nil {
 		return nil, err
@@ -390,8 +499,10 @@ func (a *Archive) deleteFolderEntry(name string) {
 // Open opens an existing GRF file at the given path.
 //
 // The file's internal headers are read and it's put in a state, where new
-// data can be written or existing data can be read.
-func Open(name string, readonly bool) (*Archive, error) {
+// data can be written or existing data can be read. The last parameter controls
+// whether you want to use Korean filenames or (mangled) filenames using the
+// Windows-1252 codepage.
+func Open(name string, readonly, koreanFilenames bool) (*Archive, error) {
 	name, err := filepath.Abs(name)
 	if err != nil {
 		return nil, err
@@ -434,11 +545,12 @@ func Open(name string, readonly bool) (*Archive, error) {
 		return nil, &ArchiveError{"invalid file header"}
 	}
 	a := &Archive{
-		Name:          name,
-		IsReadonly:    readonly,
-		entriesByName: make(map[string]*FileHeader),
-		folders:       make(map[string]map[string]bool),
-		file:          file,
+		Name:            name,
+		KoreanFilenames: koreanFilenames,
+		IsReadonly:      readonly,
+		entriesByName:   make(map[string]*FileHeader),
+		folders:         make(map[string]map[string]bool),
+		file:            file,
 	}
 	n, err = file.Read(a.Key[:])
 	if err != nil {
@@ -467,6 +579,10 @@ func Open(name string, readonly bool) (*Archive, error) {
 	a.entriesInSequence = make([]*FileHeader, int(a.FilesCount))
 
 	// Read file table
+	var d = SaneFileNameDecoder
+	if !koreanFilenames {
+		d = InsaneFileNameDecoder
+	}
 	_, err = file.Seek(int64(a.FileTableOffset)+46, io.SeekStart)
 	if err != nil {
 		return nil, err
@@ -489,7 +605,7 @@ func Open(name string, readonly bool) (*Archive, error) {
 	byOffset := make(map[uint32]*FileHeader)
 	for i := range a.entriesInSequence {
 		h := &FileHeader{}
-		err = h.ReadFrom(br)
+		err = h.ReadFrom(br, d)
 		if err != nil {
 			r.Close()
 			return nil, err
@@ -615,31 +731,44 @@ func (a *Archive) Head(name string) *FileHeader {
 // RawPut inserts or replaces a file in the GRF directly.
 //
 // The given data stream needs to already be compressed correctly.
-// No hashing is performed.
+// Will calculate the StreamHash only.
 func (a *Archive) RawPut(name string, r io.Reader, uncompressedSize uint32, flags uint8) (*FileHeader, error) {
 	a.m.Lock()
 	defer a.m.Unlock()
 
+	streamHasher := blake3.New(32, nil)
 	err := a.preparePut(name)
 	if err != nil {
 		return nil, err
 	}
-	_, err = io.Copy(a.file, r)
+	t := io.TeeReader(r, streamHasher)
+	_, err = io.Copy(a.file, t)
 	if err != nil {
 		return nil, err
 	}
-	return a.finalizePut(name, uncompressedSize, flags)
+	h, err := a.finalizePut(name, uncompressedSize, flags)
+	if err != nil {
+		return nil, err
+	}
+	h.StreamHash.SetWithHasher(streamHasher)
+	return h, nil
 }
 
 // RawPutBytes inserts or replaces a file in the GRF directly.
 //
 // The given bytes need to already be compressed correctly.
-// No hashing is performed.
+// Will calculate the stream hash only, except if the file is not marked as
+// compressed where it will also set the content hash since they are identical.
 func (a *Archive) RawPutBytes(name string, b []byte, uncompressedSize uint32, flags uint8) (*FileHeader, error) {
 	a.m.Lock()
 	defer a.m.Unlock()
 
+	streamHasher := blake3.New(32, nil)
 	err := a.preparePut(name)
+	if err != nil {
+		return nil, err
+	}
+	_, err = streamHasher.Write(b)
 	if err != nil {
 		return nil, err
 	}
@@ -647,7 +776,15 @@ func (a *Archive) RawPutBytes(name string, b []byte, uncompressedSize uint32, fl
 	if err != nil {
 		return nil, err
 	}
-	return a.finalizePut(name, uncompressedSize, flags)
+	h, err := a.finalizePut(name, uncompressedSize, flags)
+	if err != nil {
+		return nil, err
+	}
+	h.StreamHash.SetWithHasher(streamHasher)
+	if flags&FileFlag == 0 {
+		h.Hash.SetWithHasher(streamHasher)
+	}
+	return h, nil
 }
 
 // Put inserts or replaces a file in the GRF.
@@ -662,25 +799,30 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 	defer a.m.Unlock()
 
 	hasher := blake3.New(32, nil)
+	streamHasher := blake3.New(32, nil)
 	err := a.preparePut(name)
 	if err != nil {
 		return nil, err
 	}
-	t := io.TeeReader(bufio.NewReader(r), hasher)
+	tr := io.TeeReader(r, hasher)
 	var s int64
 	var flags uint8
 	if compress < 10 {
 		var w io.WriteCloser
+		var tw io.Writer
 		if compress != 0 {
 			flags = FileFlag
 			w, err = zlib.NewWriterLevel(a.file, compress)
+			tw = io.MultiWriter(w, streamHasher)
 			if err != nil {
 				return nil, err
 			}
 		} else {
+			streamHasher = hasher
 			w = a.file
+			tw = w
 		}
-		s, err = io.Copy(w, t)
+		s, err = io.Copy(tw, tr)
 		if err != nil {
 			return nil, err
 		}
@@ -692,12 +834,16 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 		}
 	} else {
 		w := &bytes.Buffer{}
-		s, err = io.Copy(w, t)
+		s, err = io.Copy(w, tr)
 		if err != nil {
 			return nil, err
 		}
 		b := w.Bytes()
 		b = zopfli.Zlib(b, compress, b)
+		_, err = streamHasher.Write(b)
+		if err != nil {
+			return nil, err
+		}
 		_, err = a.file.Write(b)
 		if err != nil {
 			return nil, err
@@ -708,6 +854,7 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 		return nil, err
 	}
 	h.Hash.SetWithHasher(hasher)
+	h.StreamHash.SetWithHasher(streamHasher)
 	return h, nil
 }
 
@@ -771,6 +918,7 @@ func (a *Archive) finalizePut(name string, uncompressedSize uint32, flags uint8)
 		header.Flags = flags
 		header.Offset = a.insertOffset
 		header.Hash.SetZero()
+		header.StreamHash.SetZero()
 		if header.Deleted {
 			header.Deleted = false
 			a.FilesCount++
@@ -825,6 +973,7 @@ func (a *Archive) LinkHeader(name string, header *FileHeader) *FileHeader {
 			Flags:          header.Flags,
 			Offset:         header.Offset,
 			Hash:           header.Hash,
+			StreamHash:     header.StreamHash,
 		}
 		a.entriesInSequence = append(a.entriesInSequence, link)
 		a.entriesByName[name] = link
@@ -838,6 +987,7 @@ func (a *Archive) LinkHeader(name string, header *FileHeader) *FileHeader {
 		link.Flags = header.Flags
 		link.Offset = header.Offset
 		link.Hash = header.Hash
+		link.StreamHash = header.StreamHash
 		link.Deleted = false
 	}
 
@@ -848,7 +998,7 @@ func (a *Archive) LinkHeader(name string, header *FileHeader) *FileHeader {
 // Get reads a file from the GRF in one go.
 //
 // Returns the total number of bytes read and will also update the file's header
-// to include a hash.
+// to include its hash and stream hash.
 func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 	a.m.Lock()
 	defer a.m.Unlock()
@@ -870,10 +1020,15 @@ func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 		return 0, err
 	}
 	var hasher hash.Hash
+	var streamHasher hash.Hash
 	if h.Hash.IsZero() {
 		hasher = blake3.New(32, nil)
 	}
 	lr := io.LimitReader(a.file, int64(h.CompressedSize))
+	if h.StreamHash.IsZero() {
+		streamHasher = blake3.New(32, nil)
+		lr = io.TeeReader(lr, streamHasher)
+	}
 	var zr io.ReadCloser
 	if h.Flags&FileFlag != 0 {
 		zr, err = zlib.NewReader(lr)
@@ -882,9 +1037,12 @@ func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 		}
 	} else {
 		zr = io.NopCloser(lr)
+		if streamHasher != nil {
+			hasher = streamHasher
+		}
 	}
 	var r io.Reader
-	if hasher != nil {
+	if hasher != nil && hasher != streamHasher {
 		r = io.TeeReader(zr, hasher)
 	} else {
 		r = zr
@@ -894,7 +1052,12 @@ func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	copy(h.Hash[:], hasher.Sum(nil))
+	if hasher != nil {
+		h.Hash.SetWithHasher(hasher)
+	}
+	if streamHasher != nil {
+		h.StreamHash.SetWithHasher(streamHasher)
+	}
 	if s != int64(h.Size) {
 		return 0, &ArchiveError{"uncompressed size mismatch"}
 	}
@@ -986,9 +1149,13 @@ func (a *Archive) writeFileTableAndHeader(truncate bool) error {
 	// Re-count
 	a.FilesCount = 0
 	a.FileTableSize = 0
+	e := SaneFileNameEncoder
+	if !a.KoreanFilenames {
+		e = InsaneFileNameEncoder
+	}
 	var entrySize int64
 	for _, h := range a.entriesInSequence {
-		entrySize, err = h.WriteTo(w)
+		entrySize, err = h.WriteTo(w, e)
 		if err != io.ErrUnexpectedEOF {
 			if err != nil {
 				return err

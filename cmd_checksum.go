@@ -33,8 +33,8 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
-func runChecksum(grfFilePath, checksumFilePath string, tryFix, quiet bool) bool {
-	ar, err := grf.Open(grfFilePath, !tryFix)
+func runChecksum(grfFilePath, checksumFilePath string, streamHash, tryFix, koreanFilenames, quiet bool) bool {
+	ar, err := grf.Open(grfFilePath, !tryFix, koreanFilenames)
 	if err != nil {
 		fmt.Println("Error while opening GRF file:", err)
 		return false
@@ -89,7 +89,7 @@ func runChecksum(grfFilePath, checksumFilePath string, tryFix, quiet bool) bool 
 		}
 	}()
 
-	hashes, err := ar.HashAll(ctx, pc)
+	hashes, err := ar.HashAll(streamHash, ctx, pc)
 
 	if bar != nil {
 		bar.Describe("Writing checksum file")

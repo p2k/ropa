@@ -67,6 +67,7 @@ func setSubcommandUsage(subcommand *flag.FlagSet, argsText string) {
 
 func main() {
 	list := flag.NewFlagSet("list", flag.ExitOnError)
+	listCP1252 := list.Bool("cp1252", false, "Use mangled filenames instead of Korean")
 	setSubcommandUsage(list, "<grf file>")
 
 	extract := flag.NewFlagSet("extract", flag.ExitOnError)
@@ -74,6 +75,7 @@ func main() {
 Output files can contain glob patterns. Folders are extracted recursively.`)
 	extractOutput := extract.String("output", ".", "Output folder")
 	extractIgnore := extract.Bool("ignore", false, "Ignore errors on individual file extractions")
+	extractCP1252 := extract.Bool("cp1252", false, "Use mangled filenames instead of Korean")
 	extractQuiet := extract.Bool("quiet", false, "Don't show progress")
 
 	update := flag.NewFlagSet("update", flag.ExitOnError)
@@ -82,17 +84,22 @@ Input files can contain glob patterns. Folders are added recursively.`)
 	updateDelete := update.Bool("delete", false, "Delete files inside the archive instead of updating")
 	updateCompress := update.Int("compress", 9, "Compression level")
 	updateNopipeline := update.Bool("nopipeline", false, "Does not use a pipeline for inserting files (saves memory)")
+	updateCP1252 := update.Bool("cp1252", false, "Use mangled filenames instead of Korean")
 	updateQuiet := update.Bool("quiet", false, "Don't show progress")
 
 	checksum := flag.NewFlagSet("checksum", flag.ExitOnError)
 	setSubcommandUsage(checksum, "<grf file>")
-	checksumOutput := checksum.String("output", "", "Output file name (default \"<input file>.b3\")")
+	checksumOutput := checksum.String("output", "", "Output file name (default \"<input file>.b3c\" or \"<input file>.b3s\")")
+	checksumStream := checksum.Bool("stream", false, "Calculate stream hashes instead of content hashes")
 	checksumFix := checksum.Bool("fix", false, "Attempt to fix problems; will rewrite files as far as possible")
+	checksumCP1252 := checksum.Bool("cp1252", false, "Use mangled filenames instead of Korean")
 	checksumQuiet := checksum.Bool("quiet", false, "Don't show progress")
 
 	verify := flag.NewFlagSet("verify", flag.ExitOnError)
 	setSubcommandUsage(verify, "<grf file>")
-	verifyChecksum := verify.String("checksum", "", "Checksum file name (default \"<input file>.b3\")")
+	verifyChecksum := verify.String("checksum", "", "Checksum file name (default \"<input file>.b3c\" or \"<input file>.b3s\")")
+	verifyStream := verify.Bool("stream", false, "Verify stream hashes instead of content hashes")
+	verifyCP1252 := verify.Bool("cp1252", false, "Use mangled filenames instead of Korean")
 	verifyQuiet := verify.Bool("quiet", false, "Don't show progress")
 
 	optimize := flag.NewFlagSet("optimize", flag.ExitOnError)
@@ -111,17 +118,19 @@ Input files can contain glob patterns. Folders are added recursively.`)
 
 	filebase := flag.NewFlagSet("filebase", flag.ExitOnError)
 	setSubcommandUsage(filebase, `[<input files...>]
-Input files can contain glob patterns. Folders are added recursively. GRF files are not ignored on these paths and will be added as regular files, so be careful; also see the "-grf" option.`)
-	filebaseGRF := filebase.String("grf", "", "Path to a GRF file or folder to be used as its root")
+Input files can contain glob patterns. Folders are added recursively; .git and .gitignore are excluded. GRF files are not ignored on these paths and will be added as regular files, so be careful; also see the "-grf" option.`)
+	filebaseGRF := filebase.String("grf", "", "Path to a GRF file or folder to be used as its root; will be excluded from input files")
 	filebaseOutput := filebase.String("output", "", "Output file name (required; should end with \".filebase.yml\" or \".filebase.yml.gz\")")
 	filebaseCompress := filebase.Int("compress", 15, "Compression level")
 	filebaseWhiteout := filebase.String("whiteout", "", "Path to a file containing a list of file names to whiteout")
 	filebaseContent := filebase.String("content", "", "Path to the content folder for updating")
+	filebaseCP1252 := filebase.Bool("cp1252", false, "Use mangled filenames instead of Korean")
 	filebaseQuiet := filebase.Bool("quiet", false, "Don't show progress")
 
 	beamsonly := flag.NewFlagSet("beamsonly", flag.ExitOnError)
 	setSubcommandUsage(beamsonly, "<grf files...>")
 	beamsonlyKeep := beamsonly.String("keep", "", "Path to a file containing the list of file names to keep; if not given, uses an internal list")
+	beamsonlyCP1252 := beamsonly.Bool("cp1252", false, "Use mangled filenames instead of Korean")
 	beamsonlyOutput := beamsonly.String("output", "beamsonly.grf", "Output GRF file name")
 
 	if len(os.Args) < 2 {
@@ -138,7 +147,7 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 			extract.Usage()
 			os.Exit(1)
 		}
-		ar, err := grf.Open(list.Arg(0), true)
+		ar, err := grf.Open(list.Arg(0), true, !*listCP1252)
 		if err != nil {
 			fmt.Println("Error while opening GRF file:", err)
 			os.Exit(1)
@@ -164,7 +173,7 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 		if len(args) >= 2 {
 			patters = args[1:]
 		}
-		if !runExtract(args[0], patters, *extractOutput, *extractIgnore, *extractQuiet) {
+		if !runExtract(args[0], patters, *extractOutput, *extractIgnore, !*extractCP1252, *extractQuiet) {
 			os.Exit(1)
 		}
 	case "update":
@@ -181,11 +190,11 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 		}
 		args := update.Args()
 		if *updateDelete {
-			if !runDelete(args[0], args[1:]) {
+			if !runDelete(args[0], args[1:], !*updateCP1252) {
 				os.Exit(1)
 			}
 		} else {
-			if !runUpdate(args[0], args[1:], *updateCompress, !*updateNopipeline, *updateQuiet) {
+			if !runUpdate(args[0], args[1:], *updateCompress, !*updateNopipeline, !*updateCP1252, *updateQuiet) {
 				os.Exit(1)
 			}
 		}
@@ -197,9 +206,15 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 			os.Exit(1)
 		}
 		if *checksumOutput == "" {
-			*checksumOutput = fmt.Sprintf("%s.b3", filepath.Base(checksum.Arg(0)))
+			var ext string
+			if *checksumStream {
+				ext = "b3s"
+			} else {
+				ext = "b3c"
+			}
+			*checksumOutput = fmt.Sprintf("%s.%s", filepath.Base(checksum.Arg(0)), ext)
 		}
-		if !runChecksum(checksum.Arg(0), *checksumOutput, *checksumFix, *checksumQuiet) {
+		if !runChecksum(checksum.Arg(0), *checksumOutput, *checksumStream, *checksumFix, !*checksumCP1252, *checksumQuiet) {
 			os.Exit(1)
 		}
 	case "verify":
@@ -210,9 +225,15 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 			os.Exit(1)
 		}
 		if *verifyChecksum == "" {
-			*verifyChecksum = fmt.Sprintf("%s.b3", filepath.Base(verify.Arg(0)))
+			var ext string
+			if *verifyStream {
+				ext = "b3s"
+			} else {
+				ext = "b3c"
+			}
+			*verifyChecksum = fmt.Sprintf("%s.%s", filepath.Base(verify.Arg(0)), ext)
 		}
-		if !runVerify(verify.Arg(0), *verifyChecksum, *verifyQuiet) {
+		if !runVerify(verify.Arg(0), *verifyChecksum, *verifyStream, !*verifyCP1252, *verifyQuiet) {
 			os.Exit(1)
 		}
 	case "optimize":
@@ -251,7 +272,7 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 			fmt.Println("Error: The \"-output\" option is required; it is an option that is not an option and this dichotomy shall haunt you for the rest of your life")
 			os.Exit(1)
 		}
-		if !runFilebase(filebase.Args(), *filebaseGRF, *filebaseOutput, *filebaseWhiteout, *filebaseContent, *filebaseCompress, *filebaseQuiet) {
+		if !runFilebase(filebase.Args(), *filebaseGRF, *filebaseOutput, *filebaseWhiteout, *filebaseContent, *filebaseCompress, !*filebaseCP1252, *filebaseQuiet) {
 			os.Exit(1)
 		}
 	case "contentcheck":
@@ -277,11 +298,20 @@ Input files can contain glob patterns. Folders are added recursively. GRF files 
 				delete(keep, k)
 			}
 			for _, path := range strings.Split(string(data), "\n") {
-				path = strings.TrimSpace(path)
-				if len(path) > 0 {
-					keep[path] = true
+				cleanPath := strings.TrimSpace(path)
+				if *beamsonlyCP1252 {
+					cleanPath, err = grf.SanitizeFileName(cleanPath)
+					if err != nil {
+						fmt.Printf("Error while sanitizing file name \"%s\": %s", path, err)
+						os.Exit(1)
+					}
+				}
+				if len(cleanPath) > 0 {
+					keep[cleanPath] = true
 				}
 			}
+		} else {
+			*beamsonlyCP1252 = false
 		}
 		if !runBeamsonly(beamsonly.Args(), *beamsonlyOutput) {
 			os.Exit(1)

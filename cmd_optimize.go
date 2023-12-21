@@ -32,7 +32,7 @@ import (
 )
 
 func runOptimize(grfFilePath string, dedup, sort, defrag, quiet bool) bool {
-	ar, err := grf.Open(grfFilePath, false)
+	ar, err := grf.Open(grfFilePath, false, true)
 	if err != nil {
 		fmt.Println("Error while opening GRF file:", err)
 		return false

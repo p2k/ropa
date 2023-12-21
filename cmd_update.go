@@ -46,16 +46,16 @@ type updateEntry struct {
 	linkpath  string
 }
 
-func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipeline, quiet bool) bool {
+func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipeline, koreanFilenames, quiet bool) bool {
 	cwd, err := os.Getwd()
 	if err != nil {
 		fmt.Println("Error while getting current directory:", err)
 		return false
 	}
 
-	ar, err := grf.Open(grfFilePath, false)
+	ar, err := grf.Open(grfFilePath, false, koreanFilenames)
 	if err != nil && os.IsNotExist(err) {
-		ar, err = grf.Create(grfFilePath)
+		ar, err = grf.Create(grfFilePath, koreanFilenames)
 	}
 	if err != nil {
 		fmt.Println("Error while opening GRF file:", err)
@@ -337,8 +337,8 @@ func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipelin
 	return true
 }
 
-func runDelete(grfFilePath string, deletePatterns []string) bool {
-	ar, err := grf.Open(grfFilePath, false)
+func runDelete(grfFilePath string, deletePatterns []string, koreanFilenames bool) bool {
+	ar, err := grf.Open(grfFilePath, false, koreanFilenames)
 	if err != nil {
 		fmt.Println("Error while opening GRF file:", err)
 		return false

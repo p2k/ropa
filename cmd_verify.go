@@ -29,12 +29,15 @@ import (
 	"os/signal"
 	"ropa/grf"
 	"strings"
+	"time"
 
 	"github.com/schollz/progressbar/v3"
 )
 
-func runVerify(grfFilePath, checksumFilePath string, quiet bool) bool {
-	ar, err := grf.Open(grfFilePath, true)
+func runVerify(grfFilePath, checksumFilePath string, streamHash, koreanFilenames, quiet bool) bool {
+	start := time.Now()
+
+	ar, err := grf.Open(grfFilePath, true, koreanFilenames)
 	if err != nil {
 		fmt.Println("Error while opening GRF file:", err)
 		return false
@@ -109,7 +112,9 @@ func runVerify(grfFilePath, checksumFilePath string, quiet bool) bool {
 		}
 	}()
 
-	failedFiles, err := ar.VerifyAll(ctx, pc, hashMap)
+	failedFiles, err := ar.VerifyAll(streamHash, hashMap, ctx, pc)
+
+	elapsed := time.Since(start)
 
 	if bar != nil {
 		bar.Finish()
@@ -132,5 +137,8 @@ func runVerify(grfFilePath, checksumFilePath string, quiet bool) bool {
 	} else {
 		fmt.Println("Verify ok.")
 	}
+
+	fmt.Println("Elapsed time for hashing:", elapsed)
+
 	return err == nil && len(failedFiles) == 0
 }

@@ -28,6 +28,7 @@ import (
 	"hash"
 	"io"
 	"io/fs"
+	"sort"
 	"strings"
 
 	"lukechampine.com/blake3"
@@ -47,16 +48,42 @@ func (e *ArchiveIntegrityError) Error() string {
 	return fmt.Sprintf("Found files with errors: %s", strings.Join(keys, ", "))
 }
 
-func (h *FileHeader) seekAndHash(file io.ReadSeekCloser, hasher hash.Hash) error {
+func (h *FileHeader) seekAndHash(file io.ReadSeekCloser, hasher, streamHasher hash.Hash) error {
+	if hasher == nil && streamHasher == nil {
+		return nil
+	}
 	_, err := file.Seek(int64(h.Offset)+46, io.SeekStart)
 	if err != nil {
 		return err
 	}
 	lr := io.LimitReader(file, int64(h.CompressedSize))
+	if hasher == nil {
+		_, err = io.Copy(streamHasher, lr)
+		if err != nil {
+			h.Hash.SetZero()
+			if h.Flags&FileFlag == 0 {
+				h.StreamHash.SetZero()
+			}
+		} else {
+			h.StreamHash.SetWithHasher(streamHasher)
+			if h.Flags&FileFlag == 0 {
+				h.Hash.SetWithHasher(streamHasher)
+			}
+		}
+		streamHasher.Reset()
+		return err
+	}
+
 	var zr io.ReadCloser
 	if h.Flags&FileFlag != 0 {
+		if streamHasher != nil {
+			lr = io.TeeReader(lr, streamHasher)
+		}
 		zr, err = zlib.NewReader(lr)
 		if err != nil {
+			if streamHasher != nil {
+				streamHasher.Reset()
+			}
 			return err
 		}
 	} else {
@@ -64,22 +91,42 @@ func (h *FileHeader) seekAndHash(file io.ReadSeekCloser, hasher hash.Hash) error
 	}
 	_, err = io.Copy(hasher, zr)
 	zr.Close()
-	copy(h.Hash[:], hasher.Sum(nil))
-	hasher.Reset()
 	if err != nil {
 		h.Hash.SetZero()
+		if h.Flags&FileFlag == 0 || streamHasher != nil {
+			h.StreamHash.SetZero()
+		}
+	} else {
+		h.Hash.SetWithHasher(hasher)
+		if h.Flags&FileFlag != 0 {
+			if streamHasher != nil {
+				h.StreamHash.SetWithHasher(streamHasher)
+			}
+		} else {
+			h.StreamHash = h.Hash
+		}
+	}
+	hasher.Reset()
+	if h.Flags&FileFlag != 0 && streamHasher != nil {
+		streamHasher.Reset()
 	}
 	return err
 }
 
-func (h *FileHeader) seekAndHashIfNeeded(file io.ReadSeekCloser, hasher hash.Hash) error {
+func (h *FileHeader) seekAndHashIfNeeded(file io.ReadSeekCloser, hasher, streamHasher hash.Hash) error {
 	if h.Hash.IsZero() {
-		return h.seekAndHash(file, hasher)
+		if h.StreamHash.IsZero() {
+			return h.seekAndHash(file, hasher, streamHasher)
+		} else {
+			return h.seekAndHash(file, hasher, nil)
+		}
+	} else if h.StreamHash.IsZero() {
+		return h.seekAndHash(file, nil, streamHasher)
 	}
 	return nil
 }
 
-// Hash returns the BLAKE3-256 hash of a file within the GRF.
+// Hash returns the BLAKE3-256 hash of a file's content within the GRF.
 //
 // If the hash already has been computed, this will return the cached value.
 func (a *Archive) Hash(name string) (FileHeaderHash, error) {
@@ -99,7 +146,8 @@ func (a *Archive) Hash(name string) (FileHeaderHash, error) {
 	}
 
 	hasher := blake3.New(32, nil)
-	err := h.seekAndHash(a.file, hasher)
+	streamHasher := blake3.New(32, nil)
+	err := h.seekAndHash(a.file, hasher, streamHasher)
 	if err != nil {
 		return FileHeaderHash{}, err
 	}
@@ -107,23 +155,74 @@ func (a *Archive) Hash(name string) (FileHeaderHash, error) {
 	return h.Hash, nil
 }
 
+// StreamHash returns the BLAKE3-256 hash of a file's stream (i.e. raw) data
+// within the GRF.
+//
+// If the hash already has been computed, this will return the cached value.
+func (a *Archive) StreamHash(name string) (FileHeaderHash, error) {
+	a.m.Lock()
+	defer a.m.Unlock()
+
+	if a.entriesByName == nil {
+		return FileHeaderHash{}, fs.ErrNotExist
+	}
+	h := a.entriesByName[name]
+	if h == nil || h.Deleted {
+		return FileHeaderHash{}, fs.ErrNotExist
+	}
+
+	if !h.StreamHash.IsZero() {
+		return h.StreamHash, nil
+	}
+
+	hasher := blake3.New(32, nil)
+	streamHasher := blake3.New(32, nil)
+	err := h.seekAndHash(a.file, hasher, streamHasher)
+	if err != nil {
+		return FileHeaderHash{}, err
+	}
+
+	return h.StreamHash, nil
+}
+
 // HashAll will return a mapping of all file names to their hashes.
+//
+// If the first parameter is false, returns content hashes. If true, returns
+// stream hashes. Stream hashes will be faster to calculate since no
+// decompression has to take place.
 //
 // The operation can be cancelled using the context; progress in bytes can be
 // tracked through the channel. If there is no severe error but one or more
 // files could not be read properly, the function will return both a result and
 // an ArchiveIntegrityError.
-func (a *Archive) HashAll(ctx context.Context, progress chan<- int64) (map[string]FileHeaderHash, error) {
-	hasher := blake3.New(32, nil)
+func (a *Archive) HashAll(streamHash bool, ctx context.Context, progress chan<- int64) (map[string]FileHeaderHash, error) {
+	var hasher hash.Hash
+	if !streamHash {
+		hasher = blake3.New(32, nil)
+	}
+	streamHasher := blake3.New(32, nil)
 
 	a.m.Lock()
 	defer a.m.Unlock()
+
+	consecutiveEntries := a.entriesInSequence
+	sorter := func(i, j int) bool {
+		if consecutiveEntries[i].Linkname != "" || consecutiveEntries[j].Linkname != "" {
+			return i < j
+		}
+		return consecutiveEntries[i].Offset < consecutiveEntries[j].Offset
+	}
+	if !sort.SliceIsSorted(consecutiveEntries, sorter) {
+		consecutiveEntries = make([]*FileHeader, len(a.entriesInSequence))
+		copy(consecutiveEntries, a.entriesInSequence)
+		sort.Slice(consecutiveEntries, sorter)
+	}
 
 	var totalProcessed int64
 	all := make(map[string]FileHeaderHash)
 	byOffset := make(map[uint32]*FileHeader)
 	fileErrors := make(map[string]error)
-	for _, h := range a.entriesInSequence {
+	for _, h := range consecutiveEntries {
 		if h.Deleted {
 			continue
 		}
@@ -136,17 +235,28 @@ func (a *Archive) HashAll(ctx context.Context, progress chan<- int64) (map[strin
 			if h.Hash != e.Hash {
 				h.Hash = e.Hash
 			}
-			all[h.Name] = h.Hash
+			if h.StreamHash != e.StreamHash {
+				h.StreamHash = e.StreamHash
+			}
+			if !streamHash {
+				all[h.Name] = h.Hash
+			} else {
+				all[h.Name] = h.StreamHash
+			}
 			continue
 		} else if h.Linkname != "" {
 			h.Linkname = ""
 		}
 
-		err := h.seekAndHashIfNeeded(a.file, hasher)
+		err := h.seekAndHashIfNeeded(a.file, hasher, streamHasher)
 		if err != nil {
 			fileErrors[h.Name] = err
 		} else {
-			all[h.Name] = h.Hash
+			if !streamHash {
+				all[h.Name] = h.Hash
+			} else {
+				all[h.Name] = h.StreamHash
+			}
 			byOffset[h.Offset] = h
 		}
 
@@ -169,22 +279,42 @@ func (a *Archive) HashAll(ctx context.Context, progress chan<- int64) (map[strin
 
 // VerifyAll will return a set of file names for which the hash is incorrect.
 //
+// The first parameter controls if the given hashes are content hashes or stream
+// hashes.
+//
 // Missing files or extra files are treated as if the hash value was incorrect.
 // The operation can be cancelled using the context; progress in bytes can be
 // tracked through the channel. If there is no severe error but one or more
 // files could not be read properly, the function will return both a result and
 // an ArchiveIntegrityError.
-func (a *Archive) VerifyAll(ctx context.Context, progress chan<- int64, hashMap map[string]FileHeaderHash) ([]string, error) {
-	hasher := blake3.New(32, nil)
+func (a *Archive) VerifyAll(streamHash bool, hashMap map[string]FileHeaderHash, ctx context.Context, progress chan<- int64) ([]string, error) {
+	var hasher hash.Hash
+	if !streamHash {
+		hasher = blake3.New(32, nil)
+	}
+	streamHasher := blake3.New(32, nil)
 
 	a.m.Lock()
 	defer a.m.Unlock()
+
+	consecutiveEntries := a.entriesInSequence
+	sorter := func(i, j int) bool {
+		if consecutiveEntries[i].Linkname != "" || consecutiveEntries[j].Linkname != "" {
+			return i < j
+		}
+		return consecutiveEntries[i].Offset < consecutiveEntries[j].Offset
+	}
+	if !sort.SliceIsSorted(consecutiveEntries, sorter) {
+		consecutiveEntries = make([]*FileHeader, len(a.entriesInSequence))
+		copy(consecutiveEntries, a.entriesInSequence)
+		sort.Slice(consecutiveEntries, sorter)
+	}
 
 	var totalProcessed int64
 	var fileNames []string
 	byOffset := make(map[uint32]*FileHeader)
 	fileErrors := make(map[string]error)
-	for _, h := range a.entriesInSequence {
+	for _, h := range consecutiveEntries {
 		if !h.Deleted {
 			e := byOffset[h.Offset]
 			if e != nil {
@@ -194,20 +324,23 @@ func (a *Archive) VerifyAll(ctx context.Context, progress chan<- int64, hashMap 
 				if h.Hash != e.Hash {
 					h.Hash = e.Hash
 				}
-				continue
+				if h.StreamHash != e.StreamHash {
+					h.StreamHash = e.StreamHash
+				}
 			} else if h.Linkname != "" {
 				h.Linkname = ""
 			}
 
 			x := hashMap[h.Name]
 			if !x.IsZero() {
-				err := h.seekAndHashIfNeeded(a.file, hasher)
+				err := h.seekAndHashIfNeeded(a.file, hasher, streamHasher)
 				if err != nil {
 					fileErrors[h.Name] = err
 				}
-				if x != h.Hash {
+				if (streamHash && x != h.StreamHash) || (!streamHash && x != h.Hash) {
 					fileNames = append(fileNames, h.Name)
 				}
+				byOffset[h.Offset] = h
 			} else {
 				fileNames = append(fileNames, h.Name)
 			}

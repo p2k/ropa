@@ -32,13 +32,13 @@ import (
 )
 
 func runRecompress(inputFilePath, outputFilePath string, level int, pipeline, quiet bool) bool {
-	srcGrf, err := grf.Open(inputFilePath, true)
+	srcGrf, err := grf.Open(inputFilePath, true, true)
 	if err != nil {
 		fmt.Println("Error while opening GRF file:", err)
 		return false
 	}
 	defer srcGrf.Close()
-	dstGrf, err := grf.Create(outputFilePath)
+	dstGrf, err := grf.Create(outputFilePath, true)
 	if err != nil {
 		fmt.Println("Error while creating GRF file:", err)
 		return false

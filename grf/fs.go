@@ -83,10 +83,11 @@ type ArchivedFile struct {
 	h       *FileHeader
 	dirname string
 
-	lr *io.LimitedReader
-	zr io.ReadCloser
-	hs hash.Hash
-	tr io.Reader
+	lr *io.LimitedReader // limited reader
+	zr io.ReadCloser     // zlib reader
+	ch hash.Hash         // content hasher
+	sh hash.Hash         // stream hasher
+	tr io.Reader         // tee reader
 
 	entries []fs.DirEntry
 }
@@ -107,6 +108,7 @@ func (f *ArchivedFile) Read(p []byte) (int, error) {
 	defer f.a.m.Unlock()
 
 	if f.a.lf != f {
+		// switch contexts
 		_, err := f.a.file.Seek(int64(f.h.Offset+f.h.CompressedSize)-f.lr.N+46, io.SeekStart)
 		if err != nil {
 			return 0, err
@@ -116,14 +118,13 @@ func (f *ArchivedFile) Read(p []byte) (int, error) {
 
 	n, err := f.tr.Read(p)
 	if err == io.EOF {
-		if f.hs != nil {
-			copy(f.h.Hash[:], f.hs.Sum(nil))
-			f.hs = nil
-			if f.zr != nil {
-				f.tr = f.zr
-			} else {
-				f.tr = f.lr
-			}
+		if f.ch != nil {
+			f.h.Hash.SetWithHasher(f.ch)
+			f.ch = nil
+		}
+		if f.sh != nil {
+			f.h.StreamHash.SetWithHasher(f.sh)
+			f.sh = nil
 		}
 	}
 
@@ -136,7 +137,8 @@ func (f *ArchivedFile) Close() error {
 	}
 
 	f.lr = nil
-	f.hs = nil
+	f.ch = nil
+	f.sh = nil
 	f.tr = nil
 
 	if f.zr != nil {
@@ -225,26 +227,31 @@ func (a *Archive) Open(name string) (fs.File, error) {
 
 	a.file.Seek(int64(h.Offset)+46, io.SeekStart)
 	lr := io.LimitReader(a.file, int64(h.CompressedSize))
-	f := &ArchivedFile{a: a, h: h, lr: lr.(*io.LimitedReader)}
+	f := &ArchivedFile{a: a, h: h, lr: lr.(*io.LimitedReader), tr: lr}
 	a.lf = f
 
-	var err error
-	var r io.Reader
 	if h.Flags&FileFlag != 0 {
-		f.zr, err = zlib.NewReader(f.lr)
+		if h.StreamHash.IsZero() {
+			f.sh = blake3.New(32, nil)
+			lr = io.TeeReader(lr, f.sh)
+		}
+		var err error
+		f.zr, err = zlib.NewReader(lr)
 		if err != nil {
 			return nil, err
 		}
-		r = f.zr
-	} else {
-		r = f.lr
-	}
-
-	if h.Hash.IsZero() {
-		f.hs = blake3.New(32, nil)
-		f.tr = io.TeeReader(r, f.hs)
-	} else {
-		f.tr = r
+		if h.Hash.IsZero() {
+			f.ch = blake3.New(32, nil)
+			f.tr = io.TeeReader(f.zr, f.ch)
+		} else {
+			f.tr = f.zr
+		}
+	} else if h.Hash.IsZero() || h.StreamHash.IsZero() {
+		f.ch = blake3.New(32, nil)
+		if h.StreamHash.IsZero() {
+			f.sh = f.ch
+		}
+		f.tr = io.TeeReader(lr, f.ch)
 	}
 
 	return f, nil
@@ -278,6 +285,18 @@ func (a *Archive) OpenRaw(name string) (fs.File, error) {
 	a.file.Seek(int64(h.Offset)+46, io.SeekStart)
 	lr := io.LimitReader(a.file, int64(h.CompressedSize))
 	f := &ArchivedFile{a: a, h: h, lr: lr.(*io.LimitedReader), tr: lr}
+	if h.Flags&FileFlag != 0 {
+		if h.StreamHash.IsZero() {
+			f.sh = blake3.New(32, nil)
+			f.tr = io.TeeReader(lr, f.sh)
+		}
+	} else if h.Hash.IsZero() || h.StreamHash.IsZero() {
+		f.ch = blake3.New(32, nil)
+		if h.StreamHash.IsZero() {
+			f.sh = f.ch
+		}
+		f.tr = io.TeeReader(lr, f.ch)
+	}
 	a.lf = f
 
 	return f, nil
