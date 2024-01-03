@@ -324,6 +324,10 @@ func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipelin
 
 	err = ar.Close()
 	if err != nil {
+		if bar != nil {
+			bar.Exit()
+			fmt.Println()
+		}
 		fmt.Println("Error while finalizing GRF:", err)
 		return false
 	}

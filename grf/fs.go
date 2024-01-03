@@ -54,6 +54,13 @@ func (fi *ArchivedFileInfo) Size() int64 {
 	return 0
 }
 
+func (fi *ArchivedFileInfo) CompressedSize() int64 {
+	if fi.h != nil {
+		return int64(fi.h.CompressedSize)
+	}
+	return 0
+}
+
 func (fi *ArchivedFileInfo) Mode() fs.FileMode {
 	if fi.h != nil {
 		var perm fs.FileMode = 0644

@@ -117,13 +117,13 @@ Input files can contain glob patterns. Folders are added recursively.`)
 	recompressQuiet := recompress.Bool("quiet", false, "Don't show progress")
 
 	filebase := flag.NewFlagSet("filebase", flag.ExitOnError)
-	setSubcommandUsage(filebase, `[<input files...>]
-Input files can contain glob patterns. Folders are added recursively; .git and .gitignore are excluded. GRF files are not ignored on these paths and will be added as regular files, so be careful; also see the "-grf" option.`)
-	filebaseGRF := filebase.String("grf", "", "Path to a GRF file or folder to be used as its root; will be excluded from input files")
-	filebaseOutput := filebase.String("output", "", "Output file name (required; should end with \".filebase.yml\" or \".filebase.yml.gz\")")
-	filebaseCompress := filebase.Int("compress", 15, "Compression level")
+	setSubcommandUsage(filebase, `<filebase file> [<input files...>]
+The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input files can contain glob patterns. Folders are added recursively; .git and .gitignore are excluded. GRF files are not ignored on these paths and will be added as regular files, so be careful; also see the "-grf" option.`)
+	filebaseGRF := filebase.String("grf", "", "Path to a GRF file or folder to be used as its root; will be excluded from input files; if the folder name is \"data\", this will prefix all paths with \"data\"")
+	filebaseGRFName := filebase.String("grfname", "", "Name override for the GRF file without extension (used to merge GRF contents)")
 	filebaseWhiteout := filebase.String("whiteout", "", "Path to a file containing a list of file names to whiteout")
 	filebaseContent := filebase.String("content", "", "Path to the content folder for updating")
+	filebaseCompress := filebase.Int("compress", 15, "Compression level")
 	filebaseCP1252 := filebase.Bool("cp1252", false, "Use mangled filenames instead of Korean")
 	filebaseQuiet := filebase.Bool("quiet", false, "Don't show progress")
 
@@ -132,6 +132,10 @@ Input files can contain glob patterns. Folders are added recursively; .git and .
 	beamsonlyKeep := beamsonly.String("keep", "", "Path to a file containing the list of file names to keep; if not given, uses an internal list")
 	beamsonlyCP1252 := beamsonly.Bool("cp1252", false, "Use mangled filenames instead of Korean")
 	beamsonlyOutput := beamsonly.String("output", "beamsonly.grf", "Output GRF file name")
+
+	assemble := flag.NewFlagSet("assemble", flag.ExitOnError)
+	setSubcommandUsage(assemble, "<grf file> <filebase file> <content dir>")
+	assembleQuiet := assemble.Bool("quiet", false, "Don't show progress")
 
 	if len(os.Args) < 2 {
 		fmt.Println("Error: missing subcommand")
@@ -268,11 +272,13 @@ Input files can contain glob patterns. Folders are added recursively; .git and .
 		}
 	case "filebase":
 		filebase.Parse(os.Args[2:])
-		if *filebaseOutput == "" {
-			fmt.Println("Error: The \"-output\" option is required; it is an option that is not an option and this dichotomy shall haunt you for the rest of your life")
+		if filebase.NArg() < 1 {
+			fmt.Println("Error: missing path to filebase file")
+			filebase.Usage()
 			os.Exit(1)
 		}
-		if !runFilebase(filebase.Args(), *filebaseGRF, *filebaseOutput, *filebaseWhiteout, *filebaseContent, *filebaseCompress, !*filebaseCP1252, *filebaseQuiet) {
+		args := filebase.Args()
+		if !runFilebase(args[0], args[1:], *filebaseGRF, *filebaseGRFName, *filebaseWhiteout, *filebaseContent, *filebaseCompress, !*filebaseCP1252, *filebaseQuiet) {
 			os.Exit(1)
 		}
 	case "contentcheck":
@@ -314,6 +320,27 @@ Input files can contain glob patterns. Folders are added recursively; .git and .
 			*beamsonlyCP1252 = false
 		}
 		if !runBeamsonly(beamsonly.Args(), *beamsonlyOutput) {
+			os.Exit(1)
+		}
+	case "assemble":
+		assemble.Parse(os.Args[2:])
+		if assemble.NArg() < 1 {
+			fmt.Println("Error: missing path to GRF file")
+			assemble.Usage()
+			os.Exit(1)
+		}
+		if assemble.NArg() < 2 {
+			fmt.Println("Error: missing path to filebase file")
+			assemble.Usage()
+			os.Exit(1)
+		}
+		if assemble.NArg() < 3 {
+			fmt.Println("Error: missing path to content directory")
+			assemble.Usage()
+			os.Exit(1)
+		}
+		args := assemble.Args()
+		if !runAssemble(args[0], args[1], args[2], *assembleQuiet) {
 			os.Exit(1)
 		}
 	case "-h", "-help", "--help", "help":

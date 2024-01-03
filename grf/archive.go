@@ -29,6 +29,7 @@ import (
 	"compress/zlib"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"hash"
 	"io"
 	"io/fs"
@@ -159,6 +160,15 @@ func SanitizeFileName(s string) (string, error) {
 		return "", err
 	}
 	return SaneFileNameDecoder(ks)
+}
+
+// ContamineFileName turns the original Korean characters to garbage.
+func ContamineFileName(s string) (string, error) {
+	ks, err := SaneFileNameEncoder(s)
+	if err != nil {
+		return "", err
+	}
+	return InsaneFileNameDecoder(ks)
 }
 
 // ArchiveError is returned to indicate problems within the GRF file.
@@ -313,7 +323,7 @@ func (h *FileHeader) WriteTo(w io.Writer, e FileNameEncoder) (int64, error) {
 	bName := strings.Join(strings.Split(h.Name, "/"), "\\")
 	kName, err := e(bName)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%s - %w", bName, err)
 	}
 	n1, err := w.Write(kName)
 	if err != nil {
@@ -436,10 +446,11 @@ func Create(name string, koreanFilenames bool) (*Archive, error) {
 		return nil, err
 	}
 	a := &Archive{
-		Name:       name,
-		Version:    0x200,
-		file:       file,
-		hasChanges: true,
+		Name:            name,
+		KoreanFilenames: koreanFilenames,
+		Version:         0x200,
+		file:            file,
+		hasChanges:      true,
 	}
 	for i := 0; i < 14; i++ {
 		a.Key[i] = uint8(i + 1)

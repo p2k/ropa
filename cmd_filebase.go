@@ -201,9 +201,9 @@ func newFilebaseBuilder() *filebaseBuilder {
 	return b
 }
 
-// Note: if the file name ends with .gz, you can only write once since the
-// buffer is used to hold compressed data
-func (b *filebaseBuilder) write(filebaseFilePath string) string {
+// Note: if the file name ends with .gz, you can only save once since the
+// buffer is re-used to hold the compressed data.
+func (b *filebaseBuilder) save(filebaseFilePath string) string {
 	f, err := os.Create(filebaseFilePath)
 	if err != nil {
 		return fmt.Sprint("Error while creating filebase file:", err)
@@ -294,15 +294,28 @@ func (b *filebaseBuilder) writeHashAndSize(h grf.FileHeaderHash, s int64) error 
 	return err
 }
 
-func (b *filebaseBuilder) writeRoot() error {
-	_, err := b.b.Write([]byte("root:\n"))
+func (b *filebaseBuilder) writeRootContents() error {
+	_, err := b.b.Write([]byte("root_contents:\n"))
 	b.lastspl = nil
 	return err
 }
 
-func (b *filebaseBuilder) writeGRF() error {
-	_, err := b.b.Write([]byte("grf:\n"))
+func (b *filebaseBuilder) writeGRFContents() error {
+	_, err := b.b.Write([]byte("grf_contents:\n"))
 	b.lastspl = nil
+	return err
+}
+
+func (b *filebaseBuilder) writeGRFName(name string) error {
+	_, err := b.b.Write([]byte("grf_name: "))
+	if err != nil {
+		return err
+	}
+	err = b.writeQuotedIfNeeded(name)
+	if err != nil {
+		return err
+	}
+	_, err = b.b.Write(b.lf)
 	return err
 }
 
@@ -323,7 +336,7 @@ func newIntegrityMap() *integrityMap {
 	return m
 }
 
-func (m *integrityMap) read(integrityFilePath string) error {
+func (m *integrityMap) load(integrityFilePath string) error {
 	if m.b.Len() > 0 {
 		m.b.Reset()
 	}
@@ -332,6 +345,7 @@ func (m *integrityMap) read(integrityFilePath string) error {
 	if err != nil {
 		return err
 	}
+	defer r.Close()
 	var scanner *bufio.Scanner
 	if strings.HasSuffix(integrityFilePath, ".gz") {
 		zr, err := gzip.NewReader(r)
@@ -342,45 +356,46 @@ func (m *integrityMap) read(integrityFilePath string) error {
 	} else {
 		scanner = bufio.NewScanner(r)
 	}
-	got_type := false
-	in_s2c := false
+	gotType := false
+	inS2C := false
 	for scanner.Scan() {
 		t := scanner.Text()
-		if !in_s2c {
+		if !inS2C {
 			if strings.HasPrefix(t, "type:") {
-				if t == "type: ROPAIntegrityMap/v1\n" {
-					got_type = true
+				if t == "type: ROPAIntegrityMap/v1" {
+					gotType = true
 				} else {
-					r.Close()
 					return errors.New("invalid integrity file type")
 				}
 				m.b.WriteString(t)
-			} else if got_type && t == "s2c:\n" {
-				in_s2c = true
+				m.b.WriteByte('\n')
+			} else if gotType && t == "s2c:" {
+				inS2C = true
 				m.b.WriteString(t)
+				m.b.WriteByte('\n')
 			}
 		} else if strings.HasPrefix(t, "  ") {
 			spl := strings.SplitN(t[2:len(t)-1], ": ", 2)
 			if len(spl) == 2 {
 				h1 := grf.FileHeaderHashFromHex(spl[0])
-				h2 := grf.FileHeaderHashFromHex(spl[0])
+				h2 := grf.FileHeaderHashFromHex(spl[1])
 				if !h1.IsZero() && !h2.IsZero() {
 					m.s2c[h1] = h2
+					m.b.WriteString(t)
+					m.b.WriteByte('\n')
 				}
-				m.b.WriteString(t)
 			}
 		} else {
-			in_s2c = false
+			inS2C = false
 		}
 	}
-	r.Close()
 
 	return nil
 }
 
-// Note: if the file name ends with .gz, you can only write once since the
+// Note: if the file name ends with .gz, you can only save once since the
 // buffer is used to hold compressed data
-func (m *integrityMap) write(integrityFilePath string) string {
+func (m *integrityMap) save(integrityFilePath string) string {
 	f, err := os.Create(integrityFilePath)
 	if err != nil {
 		return fmt.Sprint("Error while creating integrity file:", err)
@@ -406,11 +421,11 @@ func (m *integrityMap) add(streamHasher hash.Hash, contentHash grf.FileHeaderHas
 	streamHash.SetWithHasher(streamHasher)
 	if _, ok := m.s2c[streamHash]; !ok {
 		m.s2c[streamHash] = contentHash
-		m.b.Write([]byte(fmt.Sprintf("  %s: %s\n", streamHash, contentHash)))
+		m.b.Write([]byte(fmt.Sprintf("  %s: %s\n", streamHash.Hex(), contentHash.Hex())))
 	}
 }
 
-func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath, whiteoutFilePath, contentFolderPath string, compress int, koreanFilenames, quiet bool) bool {
+func runFilebase(filebaseFilePath string, inputFilePathsPatterns []string, grfFilePath, grfNameOverride, whiteoutFilePath, contentFolderPath string, compress int, koreanFilenames, quiet bool) bool {
 	hasher := blake3.New(32, nil)
 
 	imap := newIntegrityMap()
@@ -428,9 +443,10 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 		}
 
 		if _, err = os.Stat(imapPath); err == nil {
-			err = imap.read(imapPath)
+			err = imap.load(imapPath)
 			if err != nil {
 				fmt.Println("Error: could not read integrity file")
+				return false
 			}
 		}
 
@@ -511,7 +527,14 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 					return context.Canceled
 				default:
 				}
-				cmppath := filepath.ToSlash(strings.ToLower(path))
+				sanitizedPath := path
+				if !koreanFilenames {
+					sanitizedPath, err = grf.SanitizeFileName(path)
+					if err != nil {
+						return fmt.Errorf("problematic file name in root: %s - %w", path, err)
+					}
+				}
+				cmppath := filepath.ToSlash(strings.ToLower(sanitizedPath))
 				if d.IsDir() {
 					cmppath = cmppath + "/"
 				}
@@ -522,7 +545,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				if err != nil {
 					return err
 				}
-				pathspl := strings.Split(path, sep)
+				pathspl := strings.Split(sanitizedPath, sep)
 				basename := pathspl[len(pathspl)-1]
 				if realpath == grfFilePath || basename == ".git" || basename == ".gitignore" {
 					if d.IsDir() {
@@ -568,11 +591,20 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 			fmt.Println("Error while opening whiteout file:", err)
 			return false
 		}
+		defer r.Close()
 
 		scanner := bufio.NewScanner(r)
 		for scanner.Scan() {
 			path := scanner.Text()
-			cmppath := filepath.ToSlash(strings.ToLower(path))
+			sanitizedPath := path
+			if !koreanFilenames {
+				sanitizedPath, err = grf.SanitizeFileName(path)
+				if err != nil {
+					fmt.Printf("problematic file name in whiteout file: %s - %s\n", path, err)
+					return false
+				}
+			}
+			cmppath := filepath.ToSlash(strings.ToLower(sanitizedPath))
 			if i, ok := inputFilesIndex[cmppath]; ok {
 				inputFile := inputFiles[i]
 				if !inputFile.isWhiteout {
@@ -586,7 +618,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				continue
 			}
 
-			pathspl := strings.Split(path, sep)
+			pathspl := strings.Split(sanitizedPath, sep)
 			for i := 1; i < len(pathspl); i++ {
 				dirPathspl := pathspl[:i]
 				dirCmppath := strings.ToLower(strings.Join(dirPathspl, "/")) + "/"
@@ -603,7 +635,6 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 			inputFilesIndex[cmppath] = len(inputFiles)
 			inputFiles = append(inputFiles, &filebaseEntry{cmppath: cmppath, pathspl: pathspl, isWhiteout: true})
 		}
-		r.Close()
 	}
 
 	sort.Slice(inputFiles, func(i, j int) bool { return inputFiles[i].cmppath < inputFiles[j].cmppath })
@@ -650,10 +681,6 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 					return context.Canceled
 				default:
 				}
-				fi, err := d.Info()
-				if err != nil {
-					return err
-				}
 				path, err = filepath.Rel(grfRelPath, path)
 				if err != nil {
 					return err
@@ -663,13 +690,17 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				if !koreanFilenames {
 					sanitizedPath, err = grf.SanitizeFileName(path)
 					if err != nil {
-						return fmt.Errorf("problematic file name: %s - %w", path, err)
+						return fmt.Errorf("problematic file name in GRF: %s - %w", path, err)
 					}
 				}
 				cmppath := strings.ToLower(sanitizedPath)
 				pathspl := strings.Split(sanitizedPath, "/")
 				basename := pathspl[len(pathspl)-1]
 				if basename != "symlinks" && basename != ".gitignore" && !d.IsDir() {
+					fi, err := d.Info()
+					if err != nil {
+						return err
+					}
 					grfNFiles++
 					size := fi.Size()
 					existingFiles[sanitizedPath] = size
@@ -753,6 +784,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 				if h.Linkname == "" {
 					grfNFiles++
 					grfInputFiles = append(grfInputFiles, &filebaseEntry{realpath: name, cmppath: cmppath, pathspl: pathspl, size: int64(h.Size)})
+					grfTotalUncompressed += int64(h.Size)
 				} else {
 					grfNSymlinks++
 					grfInputFiles = append(grfInputFiles, &filebaseEntry{
@@ -763,7 +795,6 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 						isSymlink: true,
 					})
 				}
-				grfTotalUncompressed += int64(h.Size)
 			}
 		}
 
@@ -797,7 +828,7 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 		} else {
 			fmt.Println("Building for root...")
 		}
-		err := fbw.writeRoot()
+		err := fbw.writeRootContents()
 		if err != nil {
 			if bar != nil {
 				bar.Exit()
@@ -887,7 +918,13 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 		} else {
 			fmt.Println("Building for GRF...")
 		}
-		err := fbw.writeGRF()
+		var err error
+		if grfNameOverride != "" {
+			err = fbw.writeGRFName(grfNameOverride)
+		}
+		if err == nil {
+			err = fbw.writeGRFContents()
+		}
 		if err != nil {
 			if bar != nil {
 				bar.Exit()
@@ -967,14 +1004,14 @@ func runFilebase(inputFilePathsPatterns []string, grfFilePath, filebaseFilePath,
 		fmt.Println("Writing filebase...")
 	}
 
-	finalMessage := fbw.write(filebaseFilePath)
+	finalMessage := fbw.save(filebaseFilePath)
 	if finalMessage == "All done." && imap != nil {
 		if bar != nil {
 			bar.Describe("Writing integrity map")
 		} else {
 			fmt.Println("Writing integrity map...")
 		}
-		finalMessage = imap.write(imapPath)
+		finalMessage = imap.save(imapPath)
 	}
 
 	if bar != nil {
