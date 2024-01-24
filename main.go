@@ -146,9 +146,9 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 	switch os.Args[1] {
 	case "list":
 		list.Parse(os.Args[2:])
-		if extract.NArg() < 1 {
+		if list.NArg() < 1 {
 			fmt.Println("Error: missing path to GRF file")
-			extract.Usage()
+			list.Usage()
 			os.Exit(1)
 		}
 		ar, err := grf.Open(list.Arg(0), true, !*listCP1252)

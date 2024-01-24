@@ -147,7 +147,7 @@ func (a *Archive) Hash(name string) (FileHeaderHash, error) {
 
 	hasher := blake3.New(32, nil)
 	streamHasher := blake3.New(32, nil)
-	err := h.seekAndHash(a.file, hasher, streamHasher)
+	err := h.seekAndHash(a.rfile, hasher, streamHasher)
 	if err != nil {
 		return FileHeaderHash{}, err
 	}
@@ -177,7 +177,7 @@ func (a *Archive) StreamHash(name string) (FileHeaderHash, error) {
 
 	hasher := blake3.New(32, nil)
 	streamHasher := blake3.New(32, nil)
-	err := h.seekAndHash(a.file, hasher, streamHasher)
+	err := h.seekAndHash(a.rfile, hasher, streamHasher)
 	if err != nil {
 		return FileHeaderHash{}, err
 	}
@@ -248,7 +248,7 @@ func (a *Archive) HashAll(streamHash bool, ctx context.Context, progress chan<- 
 			h.Linkname = ""
 		}
 
-		err := h.seekAndHashIfNeeded(a.file, hasher, streamHasher)
+		err := h.seekAndHashIfNeeded(a.rfile, hasher, streamHasher)
 		if err != nil {
 			fileErrors[h.Name] = err
 		} else {
@@ -333,7 +333,7 @@ func (a *Archive) VerifyAll(streamHash bool, hashMap map[string]FileHeaderHash, 
 
 			x := hashMap[h.Name]
 			if !x.IsZero() {
-				err := h.seekAndHashIfNeeded(a.file, hasher, streamHasher)
+				err := h.seekAndHashIfNeeded(a.rfile, hasher, streamHasher)
 				if err != nil {
 					fileErrors[h.Name] = err
 				}

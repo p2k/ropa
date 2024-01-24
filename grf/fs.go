@@ -116,7 +116,7 @@ func (f *ArchivedFile) Read(p []byte) (int, error) {
 
 	if f.a.lf != f {
 		// switch contexts
-		_, err := f.a.file.Seek(int64(f.h.Offset+f.h.CompressedSize)-f.lr.N+46, io.SeekStart)
+		_, err := f.a.rfile.Seek(int64(f.h.Offset+f.h.CompressedSize)-f.lr.N+46, io.SeekStart)
 		if err != nil {
 			return 0, err
 		}
@@ -232,8 +232,8 @@ func (a *Archive) Open(name string) (fs.File, error) {
 		return &ArchivedFile{dirname: path.Base(name), entries: entries}, nil
 	}
 
-	a.file.Seek(int64(h.Offset)+46, io.SeekStart)
-	lr := io.LimitReader(a.file, int64(h.CompressedSize))
+	a.rfile.Seek(int64(h.Offset)+46, io.SeekStart)
+	lr := io.LimitReader(a.rfile, int64(h.CompressedSize))
 	f := &ArchivedFile{a: a, h: h, lr: lr.(*io.LimitedReader), tr: lr}
 	a.lf = f
 
@@ -289,8 +289,8 @@ func (a *Archive) OpenRaw(name string) (fs.File, error) {
 		return &ArchivedFile{dirname: path.Base(name), entries: entries}, nil
 	}
 
-	a.file.Seek(int64(h.Offset)+46, io.SeekStart)
-	lr := io.LimitReader(a.file, int64(h.CompressedSize))
+	a.rfile.Seek(int64(h.Offset)+46, io.SeekStart)
+	lr := io.LimitReader(a.rfile, int64(h.CompressedSize))
 	f := &ArchivedFile{a: a, h: h, lr: lr.(*io.LimitedReader), tr: lr}
 	if h.Flags&FileFlag != 0 {
 		if h.StreamHash.IsZero() {

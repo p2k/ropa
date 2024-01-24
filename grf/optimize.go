@@ -79,7 +79,7 @@ func (a *Archive) Dedup(ctx context.Context, progress chan<- int64) (bool, error
 			h.Linkname = ""
 		}
 
-		err := h.seekAndHashIfNeeded(a.file, hasher, streamHasher)
+		err := h.seekAndHashIfNeeded(a.rfile, hasher, streamHasher)
 		if err != nil {
 			return false, err
 		}
@@ -132,11 +132,11 @@ func (a *Archive) copyChunks(dst int64, src int64, length int64, buffer []uint8,
 			buffer = buffer[:length]
 		}
 
-		_, err := a.file.ReadAt(buffer, src)
+		_, err := a.wfile.ReadAt(buffer, src)
 		if err != nil {
 			return err
 		}
-		_, err = a.file.WriteAt(buffer, dst)
+		_, err = a.wfile.WriteAt(buffer, dst)
 		if err != nil {
 			return err
 		}
@@ -164,7 +164,7 @@ func (a *Archive) padChunks(length int64, buffer []uint8, bufferLength int64) er
 		}
 	}
 
-	_, err := a.file.Seek(int64(a.insertOffset)+46, io.SeekStart)
+	_, err := a.wfile.Seek(int64(a.insertOffset)+46, io.SeekStart)
 	if err != nil {
 		return err
 	}
@@ -175,7 +175,7 @@ func (a *Archive) padChunks(length int64, buffer []uint8, bufferLength int64) er
 			buffer = buffer[:length]
 		}
 
-		_, err = a.file.Write(buffer)
+		_, err = a.wfile.Write(buffer)
 		if err != nil {
 			return err
 		}
@@ -193,6 +193,10 @@ func (a *Archive) padChunks(length int64, buffer []uint8, bufferLength int64) er
 // it's considered to be safe. The operation can be cancelled using the context;
 // progress in bytes can be tracked through the channel.
 func (a *Archive) Defragment(ctx context.Context, progress chan<- int64) error {
+	if a.wfile == nil {
+		return ErrReadOnly
+	}
+
 	a.m.Lock()
 	defer a.m.Unlock()
 

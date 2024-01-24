@@ -136,6 +136,8 @@ type Pipeline struct {
 //
 // Values for compress > 9 will use Zopfli compression with the given number of
 // iterations; 15 is the recommended default for this.
+//
+// If the given archive is read only, this will produce errors in all uses.
 func NewPipeline(ar *Archive, size int, compress int) *Pipeline {
 	p := &Pipeline{
 		nocompress: compress == 0,

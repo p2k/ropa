@@ -29,6 +29,7 @@ import (
 	"compress/zlib"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -52,6 +53,9 @@ var (
 	euckrDecoder  = korean.EUCKR.NewDecoder()
 	cp1252Encoder = charmap.Windows1252.NewEncoder()
 	cp1252Decoder = charmap.Windows1252.NewDecoder()
+
+	// ErrReadOnly is returned if an attempt is made to write to a read only archive.
+	ErrReadOnly = errors.New("archive is read only")
 )
 
 const (
@@ -420,7 +424,8 @@ type Archive struct {
 	entriesByName     map[string]*FileHeader
 	folders           map[string]map[string]bool
 
-	file         *os.File
+	wfile        *os.File
+	rfile        io.ReadSeekCloser
 	hasChanges   bool
 	insertOffset uint32
 	m            sync.RWMutex
@@ -449,7 +454,8 @@ func Create(name string, koreanFilenames bool) (*Archive, error) {
 		Name:            name,
 		KoreanFilenames: koreanFilenames,
 		Version:         0x200,
-		file:            file,
+		wfile:           file,
+		rfile:           file,
 		hasChanges:      true,
 	}
 	for i := 0; i < 14; i++ {
@@ -535,6 +541,25 @@ func Open(name string, readonly, koreanFilenames bool) (*Archive, error) {
 		return nil, err
 	}
 
+	ar, err := OpenIO(file, fileSize, koreanFilenames)
+	if err != nil {
+		return nil, err
+	}
+
+	ar.Name = name
+	if !readonly {
+		ar.IsReadonly = false
+		ar.wfile = file
+	}
+
+	return ar, nil
+}
+
+// OpenIO opens a GRF file via the given io interface and file size.
+//
+// Archives opened like this are inherently read only. Close will be called on
+// the given interface when the archive is closed.
+func OpenIO(file io.ReadSeekCloser, fileSize uint32, koreanFilenames bool) (*Archive, error) {
 	// Auto-close on failure
 	success := false
 	defer func() {
@@ -556,12 +581,11 @@ func Open(name string, readonly, koreanFilenames bool) (*Archive, error) {
 		return nil, &ArchiveError{"invalid file header"}
 	}
 	a := &Archive{
-		Name:            name,
 		KoreanFilenames: koreanFilenames,
-		IsReadonly:      readonly,
+		IsReadonly:      true,
 		entriesByName:   make(map[string]*FileHeader),
 		folders:         make(map[string]map[string]bool),
-		file:            file,
+		rfile:           file,
 	}
 	n, err = file.Read(a.Key[:])
 	if err != nil {
@@ -630,9 +654,7 @@ func Open(name string, readonly, koreanFilenames bool) (*Archive, error) {
 		a.entriesInSequence[i] = h
 		if e := a.entriesByName[h.Name]; e != nil {
 			// Invalid duplicate path; delete earlier file
-			if !readonly {
-				a.hasChanges = true
-			}
+			a.hasChanges = true
 			a.deleteFolderEntry(h.Name)
 			e.Deleted = true
 		}
@@ -744,6 +766,10 @@ func (a *Archive) Head(name string) *FileHeader {
 // The given data stream needs to already be compressed correctly.
 // Will calculate the StreamHash only.
 func (a *Archive) RawPut(name string, r io.Reader, uncompressedSize uint32, flags uint8) (*FileHeader, error) {
+	if a.wfile == nil {
+		return nil, ErrReadOnly
+	}
+
 	a.m.Lock()
 	defer a.m.Unlock()
 
@@ -753,7 +779,7 @@ func (a *Archive) RawPut(name string, r io.Reader, uncompressedSize uint32, flag
 		return nil, err
 	}
 	t := io.TeeReader(r, streamHasher)
-	_, err = io.Copy(a.file, t)
+	_, err = io.Copy(a.wfile, t)
 	if err != nil {
 		return nil, err
 	}
@@ -771,6 +797,10 @@ func (a *Archive) RawPut(name string, r io.Reader, uncompressedSize uint32, flag
 // Will calculate the stream hash only, except if the file is not marked as
 // compressed where it will also set the content hash since they are identical.
 func (a *Archive) RawPutBytes(name string, b []byte, uncompressedSize uint32, flags uint8) (*FileHeader, error) {
+	if a.wfile == nil {
+		return nil, ErrReadOnly
+	}
+
 	a.m.Lock()
 	defer a.m.Unlock()
 
@@ -783,7 +813,7 @@ func (a *Archive) RawPutBytes(name string, b []byte, uncompressedSize uint32, fl
 	if err != nil {
 		return nil, err
 	}
-	_, err = a.file.Write(b)
+	_, err = a.wfile.Write(b)
 	if err != nil {
 		return nil, err
 	}
@@ -806,6 +836,10 @@ func (a *Archive) RawPutBytes(name string, b []byte, uncompressedSize uint32, fl
 // used to set the compression level. Values > 9 will use Zopfli compression
 // with the given number of iterations; 15 is the recommended default for this.
 func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, error) {
+	if a.wfile == nil {
+		return nil, ErrReadOnly
+	}
+
 	a.m.Lock()
 	defer a.m.Unlock()
 
@@ -823,14 +857,14 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 		var tw io.Writer
 		if compress != 0 {
 			flags = FileFlag
-			w, err = zlib.NewWriterLevel(a.file, compress)
+			w, err = zlib.NewWriterLevel(a.wfile, compress)
 			tw = io.MultiWriter(w, streamHasher)
 			if err != nil {
 				return nil, err
 			}
 		} else {
 			streamHasher = hasher
-			w = a.file
+			w = a.wfile
 			tw = w
 		}
 		s, err = io.Copy(tw, tr)
@@ -855,7 +889,7 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 		if err != nil {
 			return nil, err
 		}
-		_, err = a.file.Write(b)
+		_, err = a.wfile.Write(b)
 		if err != nil {
 			return nil, err
 		}
@@ -876,13 +910,13 @@ func (a *Archive) preparePut(name string) error {
 	if a.lf != nil {
 		a.lf = nil
 	}
-	_, err := a.file.Seek(int64(a.insertOffset)+46, io.SeekStart)
+	_, err := a.wfile.Seek(int64(a.insertOffset)+46, io.SeekStart)
 	if err != nil {
 		return err
 	}
 	padInsert := padding(a.insertOffset)
 	if padInsert > 0 {
-		_, err = a.file.Write(make([]byte, padInsert))
+		_, err = a.wfile.Write(make([]byte, padInsert))
 		if err != nil {
 			return err
 		}
@@ -892,14 +926,14 @@ func (a *Archive) preparePut(name string) error {
 }
 
 func (a *Archive) finalizePut(name string, uncompressedSize uint32, flags uint8) (*FileHeader, error) {
-	realEnd, err := a.file.Seek(0, io.SeekCurrent)
+	realEnd, err := a.wfile.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return nil, err
 	}
 	cs := uint32(realEnd - int64(a.insertOffset) - 46)
 	pad := padding(cs)
 	if pad > 0 {
-		_, err = a.file.Write(make([]byte, pad))
+		_, err = a.wfile.Write(make([]byte, pad))
 		if err != nil {
 			return nil, err
 		}
@@ -907,6 +941,7 @@ func (a *Archive) finalizePut(name string, uncompressedSize uint32, flags uint8)
 	if a.entriesByName == nil {
 		a.entriesByName = make(map[string]*FileHeader)
 	}
+	// TODO this can change linked files
 	header := a.entriesByName[name]
 	if header == nil {
 		header = &FileHeader{
@@ -945,6 +980,10 @@ func (a *Archive) finalizePut(name string, uncompressedSize uint32, flags uint8)
 // Does nothing if names are equal. If the given file already is a link, will
 // walk back to the root file.
 func (a *Archive) Link(name string, linkname string) (*FileHeader, error) {
+	if a.wfile == nil {
+		return nil, ErrReadOnly
+	}
+
 	a.m.RLock()
 	h := a.entriesByName[linkname]
 	a.m.RUnlock()
@@ -959,6 +998,10 @@ func (a *Archive) Link(name string, linkname string) (*FileHeader, error) {
 // Does nothing if name is equal to the name of the given file header. If the
 // given header already is a link, will walk back to the root file.
 func (a *Archive) LinkHeader(name string, header *FileHeader) *FileHeader {
+	if a.wfile == nil {
+		return nil
+	}
+
 	if name == header.Name {
 		return header
 	}
@@ -1026,7 +1069,7 @@ func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 		a.lf = nil
 	}
 
-	_, err := a.file.Seek(int64(h.Offset)+46, io.SeekStart)
+	_, err := a.rfile.Seek(int64(h.Offset)+46, io.SeekStart)
 	if err != nil {
 		return 0, err
 	}
@@ -1035,7 +1078,7 @@ func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 	if h.Hash.IsZero() {
 		hasher = blake3.New(32, nil)
 	}
-	lr := io.LimitReader(a.file, int64(h.CompressedSize))
+	lr := io.LimitReader(a.rfile, int64(h.CompressedSize))
 	if h.StreamHash.IsZero() {
 		streamHasher = blake3.New(32, nil)
 		lr = io.TeeReader(lr, streamHasher)
@@ -1077,6 +1120,10 @@ func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 
 // Rename renames (moves) oldname to newname in the GRF.
 func (a *Archive) Rename(oldname string, newname string) bool {
+	if a.wfile == nil {
+		return false
+	}
+
 	a.m.Lock()
 	defer a.m.Unlock()
 
@@ -1084,6 +1131,8 @@ func (a *Archive) Rename(oldname string, newname string) bool {
 	if oldh == nil || oldh.Deleted {
 		return false
 	}
+
+	// TODO update linked files
 
 	delete(a.entriesByName, oldname)
 	newh := a.entriesByName[newname]
@@ -1104,6 +1153,10 @@ func (a *Archive) Rename(oldname string, newname string) bool {
 // The file is not physically removed, just its file header won't be written on
 // closing.
 func (a *Archive) Delete(name string) bool {
+	if a.wfile == nil {
+		return false
+	}
+
 	a.m.Lock()
 	defer a.m.Unlock()
 
@@ -1135,13 +1188,13 @@ func (a *Archive) writeFileTableAndHeader(truncate bool) error {
 		a.insertOffset = highestOffset
 	}
 
-	_, err := a.file.Seek(int64(a.insertOffset)+46, io.SeekStart)
+	_, err := a.wfile.Seek(int64(a.insertOffset)+46, io.SeekStart)
 	if err != nil {
 		return err
 	}
 	padInsert := padding(a.insertOffset)
 	if padInsert > 0 {
-		_, err = a.file.Write(make([]byte, padInsert))
+		_, err = a.wfile.Write(make([]byte, padInsert))
 		if err != nil {
 			return err
 		}
@@ -1149,11 +1202,11 @@ func (a *Archive) writeFileTableAndHeader(truncate bool) error {
 	}
 	a.FileTableOffset = a.insertOffset
 	v := make([]byte, 16)
-	_, err = a.file.Write(v[:8]) // Writes zeroes
+	_, err = a.wfile.Write(v[:8]) // Writes zeroes
 	if err != nil {
 		return err
 	}
-	w, err := zlib.NewWriterLevel(a.file, 9)
+	w, err := zlib.NewWriterLevel(a.wfile, 9)
 	if err != nil {
 		return err
 	}
@@ -1179,20 +1232,20 @@ func (a *Archive) writeFileTableAndHeader(truncate bool) error {
 	if err != nil {
 		return err
 	}
-	fileTableRealEnd, err := a.file.Seek(0, io.SeekCurrent)
+	fileTableRealEnd, err := a.wfile.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return err
 	}
 	a.FileTableCompressedSize = uint32(fileTableRealEnd - int64(a.insertOffset) - 54)
 	pad := padding(a.FileTableCompressedSize)
 	if pad > 0 {
-		_, err = a.file.Write(v[:pad])
+		_, err = a.wfile.Write(v[:pad])
 		if err != nil {
 			return err
 		}
 	}
 	if truncate {
-		err = a.file.Truncate(fileTableRealEnd) // Truncate here
+		err = a.wfile.Truncate(fileTableRealEnd) // Truncate here
 		if err != nil {
 			return err
 		}
@@ -1200,12 +1253,12 @@ func (a *Archive) writeFileTableAndHeader(truncate bool) error {
 
 	binary.LittleEndian.PutUint32(v, a.FileTableCompressedSize)
 	binary.LittleEndian.PutUint32(v[4:], a.FileTableSize)
-	_, err = a.file.WriteAt(v[:8], int64(a.FileTableOffset)+46)
+	_, err = a.wfile.WriteAt(v[:8], int64(a.FileTableOffset)+46)
 	if err != nil {
 		return err
 	}
 
-	_, err = a.file.WriteAt(a.Key[:], 16)
+	_, err = a.wfile.WriteAt(a.Key[:], 16)
 	if err != nil {
 		return err
 	}
@@ -1213,7 +1266,7 @@ func (a *Archive) writeFileTableAndHeader(truncate bool) error {
 	binary.LittleEndian.PutUint32(v[4:], a.Seed)
 	binary.LittleEndian.PutUint32(v[8:], a.FilesCount+a.Seed+7)
 	binary.LittleEndian.PutUint32(v[12:], a.Version)
-	_, err = a.file.WriteAt(v, 30)
+	_, err = a.wfile.WriteAt(v, 30)
 	if err != nil {
 		return err
 	}
@@ -1225,13 +1278,13 @@ func (a *Archive) writeFileTableAndHeader(truncate bool) error {
 // Close finalizes a GRF file.
 //
 // This will write the file table as well as all header fields if the file has
-// been modified since opening.
+// been modified since opening (and isn't read only).
 func (a *Archive) Close() error {
 	a.m.Lock()
 	defer a.m.Unlock()
 
-	if !a.hasChanges {
-		return a.file.Close()
+	if !a.hasChanges || a.wfile == nil {
+		return a.rfile.Close()
 	}
 
 	err := a.writeFileTableAndHeader(true)
@@ -1239,5 +1292,5 @@ func (a *Archive) Close() error {
 		return err
 	}
 
-	return a.file.Close()
+	return a.wfile.Close()
 }
