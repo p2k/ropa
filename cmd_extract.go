@@ -33,7 +33,7 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
-func runExtract(grfFilePath string, outputPatterns []string, outputFolderPath string, ignoreErrors, koreanFilenames, quiet bool) bool {
+func runExtract(grfFilePath string, outputPatterns []string, outputFolderPath string, raw, ignoreErrors, koreanFilenames, quiet bool) bool {
 	ar, err := grf.Open(grfFilePath, true, koreanFilenames)
 	if err != nil {
 		fmt.Println("Error while opening GRF file:", err)
@@ -64,10 +64,14 @@ func runExtract(grfFilePath string, outputPatterns []string, outputFolderPath st
 	}
 	defer slf.Write()
 
-	var totalUncompressed int64
+	var totalSize int64
 	var outputFiles []string
 	if len(outputPatterns) == 1 && outputPatterns[0] == "*" {
-		totalUncompressed = ar.TotalUncompressedSize()
+		if raw {
+			totalSize = ar.TotalCompressedSize()
+		} else {
+			totalSize = ar.TotalUncompressedSize()
+		}
 		outputFiles = ar.AllFileNames()
 	} else {
 		outputFiles = make([]string, 0, len(outputPatterns))
@@ -88,7 +92,11 @@ func runExtract(grfFilePath string, outputPatterns []string, outputFolderPath st
 							if err != nil {
 								return err
 							}
-							totalUncompressed += fi.Size()
+							if raw {
+								totalSize += fi.(*grf.ArchivedFileInfo).CompressedSize()
+							} else {
+								totalSize += fi.Size()
+							}
 						}
 						outputFiles = append(outputFiles, path)
 					}
@@ -105,7 +113,7 @@ func runExtract(grfFilePath string, outputPatterns []string, outputFolderPath st
 	var bar *progressbar.ProgressBar
 	if !quiet {
 		bar = progressbar.NewOptions64(
-			totalUncompressed,
+			totalSize,
 			progressbar.OptionSetDescription("Extracting"),
 			progressbar.OptionFullWidth(),
 			progressbar.OptionShowBytes(true),
@@ -181,7 +189,12 @@ func runExtract(grfFilePath string, outputPatterns []string, outputFolderPath st
 			fmt.Printf("Error while creating \"%s\": %s\n", fname, err)
 			return false
 		}
-		written, err := ar.Get(name, w)
+		var written int64
+		if raw {
+			written, err = ar.RawGet(name, w)
+		} else {
+			written, err = ar.Get(name, w)
+		}
 		w.Close()
 		if err != nil {
 			if !ignoreErrors {

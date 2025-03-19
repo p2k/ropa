@@ -34,6 +34,8 @@ import (
 	"lukechampine.com/blake3"
 )
 
+var grffsCommonModTime = time.Date(2002, time.August, 31, 12, 0, 0, 0, time.UTC)
+
 // ArchivedFileInfo implements the FileInfo interface for files within a GRF.
 type ArchivedFileInfo struct {
 	h       *FileHeader
@@ -62,22 +64,22 @@ func (fi *ArchivedFileInfo) CompressedSize() int64 {
 }
 
 func (fi *ArchivedFileInfo) Mode() fs.FileMode {
-	if fi.h != nil {
-		var perm fs.FileMode = 0644
-		if fi.h.Linkname != "" {
-			return perm | fs.ModeSymlink
-		}
-		return perm
+	if fi.dirname != "" {
+		return fs.ModeDir | 0755
 	}
-	return fs.ModeDir | 0755
+	var perm fs.FileMode = 0644
+	if fi.h.Linkname != "" {
+		return perm | fs.ModeSymlink
+	}
+	return perm
 }
 
 func (fi *ArchivedFileInfo) ModTime() time.Time {
-	return time.Time{}
+	return grffsCommonModTime
 }
 
 func (fi *ArchivedFileInfo) IsDir() bool {
-	return fi.h == nil
+	return fi.dirname != ""
 }
 
 func (fi *ArchivedFileInfo) Sys() any {
@@ -88,6 +90,7 @@ func (fi *ArchivedFileInfo) Sys() any {
 type ArchivedFile struct {
 	a       *Archive
 	h       *FileHeader
+	raw     bool
 	dirname string
 
 	lr *io.LimitedReader // limited reader
@@ -99,11 +102,66 @@ type ArchivedFile struct {
 	entries []fs.DirEntry
 }
 
-func (f *ArchivedFile) Stat() (fs.FileInfo, error) {
-	if f.h != nil {
-		return &ArchivedFileInfo{h: f.h}, nil
+// Reset will rewind the file to the start.
+//
+// Effectively closes and opens the file again.
+func (f *ArchivedFile) Reset() error {
+	if f.h == nil {
+		return nil
 	}
-	return &ArchivedFileInfo{dirname: f.dirname}, nil
+
+	err := f.Close()
+	if err != nil {
+		return err
+	}
+
+	f.a.m.RLock()
+	defer f.a.m.RUnlock()
+
+	f.a.rfile.Seek(int64(f.h.Offset)+46, io.SeekStart)
+	var lr io.Reader
+	if f.h.Flags&(MixcryptFlag|DESFlag) != 0 && !f.raw {
+		lr = io.LimitReader(f.a.rfile, int64(f.h.AlignedLength))
+		f.lr = lr.(*io.LimitedReader)
+		lr = newGRFCryptReader(lr, f.h.Flags&MixcryptFlag != 0, f.h.CompressedSize)
+	} else {
+		lr = io.LimitReader(f.a.rfile, int64(f.h.CompressedSize))
+		f.lr = lr.(*io.LimitedReader)
+	}
+	f.tr = lr
+	f.a.lf = f
+
+	if f.h.Flags&FileFlag != 0 {
+		if f.h.StreamHash.IsZero() {
+			f.sh = blake3.New(32, nil)
+			lr = io.TeeReader(lr, f.sh)
+		}
+		if !f.raw {
+			var err error
+			f.zr, err = zlib.NewReader(lr)
+			if err != nil {
+				return err
+			}
+			if f.h.Hash.IsZero() {
+				f.ch = blake3.New(32, nil)
+				f.tr = io.TeeReader(f.zr, f.ch)
+			} else {
+				f.tr = f.zr
+			}
+		}
+	} else if f.h.Hash.IsZero() || f.h.StreamHash.IsZero() {
+		f.ch = blake3.New(32, nil)
+		if f.h.StreamHash.IsZero() {
+			f.sh = f.ch
+		}
+		f.tr = io.TeeReader(lr, f.ch)
+	}
+
+	return nil
+}
+
+func (f *ArchivedFile) Stat() (fs.FileInfo, error) {
+	return &ArchivedFileInfo{h: f.h, dirname: f.dirname}, nil
 }
 
 func (f *ArchivedFile) Read(p []byte) (int, error) {
@@ -207,106 +265,60 @@ func (a *Archive) doReadDir(name string) ([]fs.DirEntry, error) {
 	return entries, nil
 }
 
+func (a *Archive) doOpen(name string, raw bool) (fs.File, error) {
+	a.m.RLock()
+
+	if a.entriesByName == nil {
+		a.m.RUnlock()
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+	h := a.entriesByName[name]
+	if h != nil && h.Deleted {
+		h = nil
+	}
+
+	if h == nil || a.AllowHybridFolderEntries {
+		// Maybe a folder
+		entries, err := a.doReadDir(name)
+		if err == nil {
+			f := &ArchivedFile{dirname: path.Base(name), entries: entries}
+			a.m.RUnlock()
+			if h != nil {
+				// Hybrid
+				f.a = a
+				f.h = h
+				f.raw = raw
+				return f, f.Reset()
+			}
+			return f, nil
+		} else if !a.AllowHybridFolderEntries {
+			a.m.RUnlock()
+			return nil, &fs.PathError{Op: "open", Path: name, Err: err}
+		}
+	}
+
+	f := &ArchivedFile{a: a, h: h, raw: raw}
+	a.m.RUnlock()
+
+	return f, f.Reset()
+}
+
 // Open opens the named file inside the GRF.
 //
 // This implements the FS interface. Opening more than one file can be
 // detrimental to the overall speed since a seek has to be performed for each
 // context switch. Also updates the file's header to include a hash at the end.
 func (a *Archive) Open(name string) (fs.File, error) {
-	a.m.RLock()
-	defer a.m.RUnlock()
-
-	if a.entriesByName == nil {
-		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
-	}
-	h := a.entriesByName[name]
-	if h != nil && h.Deleted {
-		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
-	}
-	if h == nil {
-		// Maybe a folder
-		entries, err := a.doReadDir(name)
-		if err != nil {
-			return nil, &fs.PathError{Op: "open", Path: name, Err: err}
-		}
-		return &ArchivedFile{dirname: path.Base(name), entries: entries}, nil
-	}
-
-	a.rfile.Seek(int64(h.Offset)+46, io.SeekStart)
-	lr := io.LimitReader(a.rfile, int64(h.CompressedSize))
-	f := &ArchivedFile{a: a, h: h, lr: lr.(*io.LimitedReader), tr: lr}
-	a.lf = f
-
-	if h.Flags&FileFlag != 0 {
-		if h.StreamHash.IsZero() {
-			f.sh = blake3.New(32, nil)
-			lr = io.TeeReader(lr, f.sh)
-		}
-		var err error
-		f.zr, err = zlib.NewReader(lr)
-		if err != nil {
-			return nil, err
-		}
-		if h.Hash.IsZero() {
-			f.ch = blake3.New(32, nil)
-			f.tr = io.TeeReader(f.zr, f.ch)
-		} else {
-			f.tr = f.zr
-		}
-	} else if h.Hash.IsZero() || h.StreamHash.IsZero() {
-		f.ch = blake3.New(32, nil)
-		if h.StreamHash.IsZero() {
-			f.sh = f.ch
-		}
-		f.tr = io.TeeReader(lr, f.ch)
-	}
-
-	return f, nil
+	return a.doOpen(name, false)
 }
 
 // OpenRaw opens the named file inside the GRF without decompressing.
 //
 // Opening more than one file can be detrimental to the overall speed since a
 // seek has to be performed for each context switch. This will not update the
-// file's hash.
+// file's hash, but possibly its stream hash.
 func (a *Archive) OpenRaw(name string) (fs.File, error) {
-	a.m.RLock()
-	defer a.m.RUnlock()
-
-	if a.entriesByName == nil {
-		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
-	}
-	h := a.entriesByName[name]
-	if h != nil && h.Deleted {
-		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
-	}
-	if h == nil {
-		// Maybe a folder
-		entries, err := a.doReadDir(name)
-		if err != nil {
-			return nil, &fs.PathError{Op: "open", Path: name, Err: err}
-		}
-		return &ArchivedFile{dirname: path.Base(name), entries: entries}, nil
-	}
-
-	a.rfile.Seek(int64(h.Offset)+46, io.SeekStart)
-	lr := io.LimitReader(a.rfile, int64(h.CompressedSize))
-	f := &ArchivedFile{a: a, h: h, lr: lr.(*io.LimitedReader), tr: lr}
-	if h.Flags&FileFlag != 0 {
-		if h.StreamHash.IsZero() {
-			f.sh = blake3.New(32, nil)
-			f.tr = io.TeeReader(lr, f.sh)
-		}
-	} else if h.Hash.IsZero() || h.StreamHash.IsZero() {
-		f.ch = blake3.New(32, nil)
-		if h.StreamHash.IsZero() {
-			f.sh = f.ch
-		}
-		f.tr = io.TeeReader(lr, f.ch)
-	}
-	a.lf = f
-
-	return f, nil
+	return a.doOpen(name, true)
 }
 
 // ReadDir reads the named virtual directory and returns a list of directory
@@ -350,21 +362,29 @@ func (a *Archive) Stat(name string) (fs.FileInfo, error) {
 		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
 	}
 	h := a.entriesByName[name]
-	if h != nil {
-		if h.Deleted {
+	if h != nil && h.Deleted {
+		h = nil
+	}
+
+	if h == nil || a.AllowHybridFolderEntries {
+		// Maybe a folder
+		f := a.folders[name]
+		if f != nil {
+			fi := &ArchivedFileInfo{dirname: path.Base(name)}
+			if h != nil {
+				// Hybrid
+				fi.h = h
+			}
+			return fi, nil
+		} else if !a.AllowHybridFolderEntries {
 			return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
 		}
-		return &ArchivedFileInfo{h: h}, nil
 	}
 
-	f := a.folders[name]
-	if f == nil {
-		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
-	}
-	return &ArchivedFileInfo{dirname: path.Base(name)}, nil
+	return &ArchivedFileInfo{h: h}, nil
 }
 
-// Glob returns the names of all files matching pattern
+// Glob returns the names of all files matching pattern.
 //
 // This implements the GlobFS interface.
 func (a *Archive) Glob(pattern string) ([]string, error) {
@@ -372,6 +392,7 @@ func (a *Archive) Glob(pattern string) ([]string, error) {
 	defer a.m.RUnlock()
 
 	var result []string
+	resultSet := make(map[string]bool)
 	if a.folders != nil {
 		for n := range a.folders {
 			if n == "" {
@@ -383,6 +404,7 @@ func (a *Archive) Glob(pattern string) ([]string, error) {
 			}
 			if m {
 				result = append(result, n)
+				resultSet[n] = true
 			}
 		}
 	}
@@ -392,7 +414,7 @@ func (a *Archive) Glob(pattern string) ([]string, error) {
 			if err != nil {
 				return nil, err
 			}
-			if m {
+			if m && !resultSet[n] {
 				result = append(result, n)
 			}
 		}

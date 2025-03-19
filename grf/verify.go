@@ -41,22 +41,34 @@ type ArchiveIntegrityError struct {
 }
 
 func (e *ArchiveIntegrityError) Error() string {
-	keys := make([]string, 0, len(e.FileErrors))
+	keys := make([]string, 0, min(len(e.FileErrors), 101))
+	i := 0
 	for k := range e.FileErrors {
+		if i == 100 {
+			keys = append(keys, "...")
+		}
 		keys = append(keys, k)
 	}
-	return fmt.Sprintf("Found files with errors: %s", strings.Join(keys, ", "))
+	return fmt.Sprintf("Found %d files with errors: %s", len(e.FileErrors), strings.Join(keys, ", "))
 }
 
 func (h *FileHeader) seekAndHash(file io.ReadSeekCloser, hasher, streamHasher hash.Hash) error {
 	if hasher == nil && streamHasher == nil {
 		return nil
 	}
+	if h.Flags&FileFlag == 0 && h.CompressedSize != h.Size {
+		return &ArchiveError{"uncompressed size mismatch"}
+	}
 	_, err := file.Seek(int64(h.Offset)+46, io.SeekStart)
 	if err != nil {
 		return err
 	}
-	lr := io.LimitReader(file, int64(h.CompressedSize))
+	var lr io.Reader
+	if h.Flags&(MixcryptFlag|DESFlag) != 0 {
+		lr = newGRFCryptReader(io.LimitReader(file, int64(h.AlignedLength)), h.Flags&MixcryptFlag != 0, h.CompressedSize)
+	} else {
+		lr = io.LimitReader(file, int64(h.CompressedSize))
+	}
 	if hasher == nil {
 		_, err = io.Copy(streamHasher, lr)
 		if err != nil {

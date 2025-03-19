@@ -52,6 +52,7 @@ func printUsage() {
    recompress Recompress a GRF file
    filebase   Build a filebase
    beamsonly  Build the beams-only GRF
+   serve      Serve a GRF through WebDAV
 `, os.Args[0])
 }
 
@@ -74,6 +75,7 @@ func main() {
 	setSubcommandUsage(extract, `<grf file> [<output files...>]
 Output files can contain glob patterns. Folders are extracted recursively.`)
 	extractOutput := extract.String("output", ".", "Output folder")
+	extractRaw := extract.Bool("raw", false, "Extract raw file streams")
 	extractIgnore := extract.Bool("ignore", false, "Ignore errors on individual file extractions")
 	extractCP1252 := extract.Bool("cp1252", false, "Use mangled filenames instead of Korean")
 	extractQuiet := extract.Bool("quiet", false, "Don't show progress")
@@ -137,6 +139,11 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 	setSubcommandUsage(assemble, "<grf file> <filebase file> <content dir>")
 	assembleQuiet := assemble.Bool("quiet", false, "Don't show progress")
 
+	serve := flag.NewFlagSet("serve", flag.ExitOnError)
+	setSubcommandUsage(serve, "<grf file>")
+	servePort := serve.Int("port", 8080, "Port")
+	serveCP1252 := serve.Bool("cp1252", false, "Use mangled filenames instead of Korean")
+
 	if len(os.Args) < 2 {
 		fmt.Println("Error: missing subcommand")
 		printUsage()
@@ -177,7 +184,7 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 		if len(args) >= 2 {
 			patters = args[1:]
 		}
-		if !runExtract(args[0], patters, *extractOutput, *extractIgnore, !*extractCP1252, *extractQuiet) {
+		if !runExtract(args[0], patters, *extractOutput, *extractRaw, *extractIgnore, !*extractCP1252, *extractQuiet) {
 			os.Exit(1)
 		}
 	case "update":
@@ -341,6 +348,12 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 		}
 		args := assemble.Args()
 		if !runAssemble(args[0], args[1], args[2], *assembleQuiet) {
+			os.Exit(1)
+		}
+	case "serve":
+		serve.Parse(os.Args[2:])
+		args := serve.Args()
+		if !runServe(args[0], *servePort, !*serveCP1252) {
 			os.Exit(1)
 		}
 	case "-h", "-help", "--help", "help":

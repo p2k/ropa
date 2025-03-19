@@ -110,30 +110,56 @@ func runChecksum(grfFilePath, checksumFilePath string, streamHash, tryFix, korea
 		fmt.Println()
 	}
 
-	if ierr, ok := err.(*grf.ArchiveIntegrityError); ok && tryFix {
-		fmt.Println("Attempting to fix errors...")
-		var resolved []string
-		for n, e := range ierr.FileErrors {
-			if e == io.ErrUnexpectedEOF {
-				buf := &bytes.Buffer{}
-				h := ar.Head(n)
-				ar.Get(n, buf)
-				l := buf.Len()
-				if l == 0 {
-					fmt.Printf("%s ==> File could not be read at all; removing...\n", n)
-					ar.Delete(n)
-				} else {
-					fmt.Printf("%s ==> File is truncated (expected %d, got %d); writing rest...\n", n, h.Size, l)
-					ar.Put(n, buf, 9)
+	if ierr, ok := err.(*grf.ArchiveIntegrityError); ok {
+		if tryFix {
+			fmt.Println("Attempting to fix errors...")
+			var resolved []string
+			for n, e := range ierr.FileErrors {
+				if e == io.ErrUnexpectedEOF {
+					buf := &bytes.Buffer{}
+					h := ar.Head(n)
+					ar.Get(n, buf)
+					l := buf.Len()
+					if l == 0 {
+						fmt.Printf("%s ==> File could not be read at all; removing...\n", n)
+						ar.Delete(n)
+					} else {
+						fmt.Printf("%s ==> File is truncated (expected %d, got %d); writing rest...\n", n, h.Size, l)
+						ar.Put(n, buf, 9)
+					}
+					resolved = append(resolved, n)
+					continue
 				}
-				resolved = append(resolved, n)
+				if ae, ok := e.(*grf.ArchiveError); ok {
+					if ae.Error() == "uncompressed size mismatch" {
+						fmt.Printf("%s ==> File not marked as compressed, but has size mismatch; removing...\n", n)
+						ar.Delete(n)
+						resolved = append(resolved, n)
+						continue
+					}
+				}
+
+				fmt.Printf("%s ==> %v\n", n, e)
+				if rf, ferr := ar.OpenRaw(n); ferr == nil {
+					if data, rerr := io.ReadAll(rf); rerr == nil {
+						fmt.Println(data)
+					}
+				}
+			}
+			for _, n := range resolved {
+				delete(ierr.FileErrors, n)
+			}
+		} else {
+			for n, e := range ierr.FileErrors {
+				fmt.Printf("%s ==> %v\n", n, e)
 			}
 		}
-		for _, n := range resolved {
-			delete(ierr.FileErrors, n)
-		}
+
 		if len(ierr.FileErrors) == 0 {
 			err = nil
+		} else {
+			//lint:ignore ST1005 used in message for the user
+			err = fmt.Errorf("Found %d files with errors", len(ierr.FileErrors))
 		}
 	}
 

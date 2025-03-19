@@ -420,6 +420,11 @@ type Archive struct {
 	// FileTableSize is the uncompressed size of the file table in bytes.
 	FileTableSize uint32
 
+	// AllowHybridFolderEntries influences how Open and OpenRaw treat entries that are both a folders and files.
+	//
+	// This is mainly for WebDAV support.
+	AllowHybridFolderEntries bool
+
 	entriesInSequence []*FileHeader
 	entriesByName     map[string]*FileHeader
 	folders           map[string]map[string]bool
@@ -458,7 +463,7 @@ func Create(name string, koreanFilenames bool) (*Archive, error) {
 		rfile:           file,
 		hasChanges:      true,
 	}
-	for i := 0; i < 14; i++ {
+	for i := range 14 {
 		a.Key[i] = uint8(i + 1)
 	}
 	_, err = file.Write(make([]byte, 30))
@@ -1049,6 +1054,46 @@ func (a *Archive) LinkHeader(name string, header *FileHeader) *FileHeader {
 	return link
 }
 
+// RawGet reads a raw stream from the GRF in one go.
+//
+// Returns the total number of bytes read and will also update the file's header
+// to include its stream hash.
+func (a *Archive) RawGet(name string, w io.Writer) (int64, error) {
+	a.m.Lock()
+	defer a.m.Unlock()
+
+	if a.entriesByName == nil {
+		return 0, fs.ErrNotExist
+	}
+	h := a.entriesByName[name]
+	if h == nil || h.Deleted {
+		return 0, fs.ErrNotExist
+	}
+
+	if a.lf != nil {
+		a.lf = nil
+	}
+
+	_, err := a.rfile.Seek(int64(h.Offset)+46, io.SeekStart)
+	if err != nil {
+		return 0, err
+	}
+	var streamHasher hash.Hash
+	lr := io.LimitReader(a.rfile, int64(h.CompressedSize))
+	if h.StreamHash.IsZero() {
+		streamHasher = blake3.New(32, nil)
+		lr = io.TeeReader(lr, streamHasher)
+	}
+	s, err := io.Copy(w, lr)
+	if err != nil {
+		return 0, err
+	}
+	if streamHasher != nil {
+		h.StreamHash.SetWithHasher(streamHasher)
+	}
+	return s, nil
+}
+
 // Get reads a file from the GRF in one go.
 //
 // Returns the total number of bytes read and will also update the file's header
@@ -1078,7 +1123,12 @@ func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 	if h.Hash.IsZero() {
 		hasher = blake3.New(32, nil)
 	}
-	lr := io.LimitReader(a.rfile, int64(h.CompressedSize))
+	var lr io.Reader
+	if h.Flags&(MixcryptFlag|DESFlag) != 0 {
+		lr = newGRFCryptReader(io.LimitReader(a.rfile, int64(h.AlignedLength)), h.Flags&MixcryptFlag != 0, h.CompressedSize)
+	} else {
+		lr = io.LimitReader(a.rfile, int64(h.CompressedSize))
+	}
 	if h.StreamHash.IsZero() {
 		streamHasher = blake3.New(32, nil)
 		lr = io.TeeReader(lr, streamHasher)
