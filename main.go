@@ -142,7 +142,9 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 	serve := flag.NewFlagSet("serve", flag.ExitOnError)
 	setSubcommandUsage(serve, "<grf file>")
 	servePort := serve.Int("port", 8080, "Port")
+	serveCompress := serve.Int("compress", 9, "Compression level")
 	serveCP1252 := serve.Bool("cp1252", false, "Use mangled filenames instead of Korean")
+	serveReadonly := serve.Bool("readonly", false, "Serve the archive read-only")
 
 	if len(os.Args) < 2 {
 		fmt.Println("Error: missing subcommand")
@@ -353,7 +355,7 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 	case "serve":
 		serve.Parse(os.Args[2:])
 		args := serve.Args()
-		if !runServe(args[0], *servePort, !*serveCP1252) {
+		if !runServe(args[0], *servePort, *serveCompress, !*serveCP1252, *serveReadonly) {
 			os.Exit(1)
 		}
 	case "-h", "-help", "--help", "help":

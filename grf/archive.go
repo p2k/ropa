@@ -908,6 +908,70 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 	return h, nil
 }
 
+// PutBytes inserts or replaces a file in the GRF using a byte array.
+func (a *Archive) PutBytes(name string, p []byte, compress int) (*FileHeader, error) {
+	if a.wfile == nil {
+		return nil, ErrReadOnly
+	}
+
+	a.m.Lock()
+	defer a.m.Unlock()
+
+	hasher := blake3.New(32, nil)
+	streamHasher := blake3.New(32, nil)
+	err := a.preparePut(name)
+	if err != nil {
+		return nil, err
+	}
+
+	var s int
+	var flags uint8
+	if compress < 10 {
+		var w io.WriteCloser
+		var tw io.Writer
+		if compress != 0 {
+			flags = FileFlag
+			w, err = zlib.NewWriterLevel(a.wfile, compress)
+			tw = io.MultiWriter(w, streamHasher)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			streamHasher = hasher
+			w = a.wfile
+			tw = w
+		}
+		s, err = tw.Write(p)
+		if err != nil {
+			return nil, err
+		}
+		if compress != 0 {
+			err = w.Close()
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		b := make([]byte, len(p))
+		b = zopfli.Zlib(p, compress, b)
+		_, err = streamHasher.Write(b)
+		if err != nil {
+			return nil, err
+		}
+		_, err = a.wfile.Write(b)
+		if err != nil {
+			return nil, err
+		}
+	}
+	h, err := a.finalizePut(name, uint32(s), flags)
+	if err != nil {
+		return nil, err
+	}
+	h.Hash.SetWithHasher(hasher)
+	h.StreamHash.SetWithHasher(streamHasher)
+	return h, nil
+}
+
 func (a *Archive) preparePut(name string) error {
 	if name == "." || (a.folders != nil && a.folders[name] != nil) {
 		return &ArchiveError{"cannot write to a directory entry"}
@@ -946,7 +1010,7 @@ func (a *Archive) finalizePut(name string, uncompressedSize uint32, flags uint8)
 	if a.entriesByName == nil {
 		a.entriesByName = make(map[string]*FileHeader)
 	}
-	// TODO this can change linked files
+	// TODO: This can change linked files
 	header := a.entriesByName[name]
 	if header == nil {
 		header = &FileHeader{
@@ -1168,21 +1232,38 @@ func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 	return s, nil
 }
 
-// Rename renames (moves) oldname to newname in the GRF.
-func (a *Archive) Rename(oldname string, newname string) bool {
-	if a.wfile == nil {
-		return false
+func (a *Archive) doRename(oldname, newname string) bool {
+	if oldname == newname {
+		return true
 	}
 
-	a.m.Lock()
-	defer a.m.Unlock()
-
 	oldh := a.entriesByName[oldname]
+
+	if a.folders != nil {
+		if f := a.folders[oldname]; f != nil && (a.AllowHybridFolderEntries || oldh == nil) {
+			if len(f) > 0 {
+				for entry := range f {
+					a.doRename(path.Join(oldname, entry), path.Join(newname, entry))
+				}
+			} else {
+				a.insertFolderEntry(newname)
+				a.folders[newname] = make(map[string]bool)
+			}
+			olddir, oldbase := path.Split(oldname)
+			if olddir != "" {
+				olddir = olddir[:len(olddir)-1]
+			} else {
+				olddir = "."
+			}
+			delete(a.folders[olddir], oldbase)
+			delete(a.folders, oldname)
+			return true
+		}
+	}
+
 	if oldh == nil || oldh.Deleted {
 		return false
 	}
-
-	// TODO update linked files
 
 	delete(a.entriesByName, oldname)
 	newh := a.entriesByName[newname]
@@ -1194,8 +1275,35 @@ func (a *Archive) Rename(oldname string, newname string) bool {
 	oldh.Name = newname
 	a.entriesByName[newname] = oldh
 
+	// Fix folder entry
+	olddir, oldbase := path.Split(oldname)
+	if olddir != "" {
+		olddir = olddir[:len(olddir)-1]
+	} else {
+		olddir = "."
+	}
+	a.insertFolderEntry(newname)
+	delete(a.folders[olddir], oldbase)
+
 	a.hasChanges = true
 	return true
+}
+
+// Rename renames (moves) oldname to newname in the GRF.
+func (a *Archive) Rename(oldname, newname string) bool {
+	if a.wfile == nil {
+		return false
+	}
+
+	// Early check
+	if oldname == newname {
+		return true
+	}
+
+	a.m.Lock()
+	defer a.m.Unlock()
+
+	return a.doRename(oldname, newname)
 }
 
 // Delete removes a file from the GRF.
@@ -1220,7 +1328,54 @@ func (a *Archive) Delete(name string) bool {
 	h.Deleted = true
 	a.FilesCount--
 	a.hasChanges = true
+
+	if a.folders != nil {
+		dir, name := path.Split(name)
+		if dir != "" {
+			dir = dir[:len(dir)-1]
+		} else {
+			dir = "."
+		}
+		if f := a.folders[dir]; f != nil {
+			delete(f, name)
+		}
+	}
 	return true
+}
+
+func (a *Archive) doRemoveAll(name string) {
+	if a.entriesByName != nil {
+		h := a.entriesByName[name]
+		if h != nil && !h.Deleted {
+			h.Deleted = true
+			a.FilesCount--
+			a.hasChanges = true
+		}
+	}
+
+	if a.folders != nil {
+		for entry := range a.folders[name] {
+			a.doRemoveAll(path.Join(name, entry))
+		}
+		delete(a.folders, name)
+
+		dir, name := path.Split(name)
+		if dir != "" {
+			dir = dir[:len(dir)-1]
+		} else {
+			dir = "."
+		}
+		delete(a.folders[dir], name)
+	}
+}
+
+// RemoveAll removes the file or folder (and its contents recursively) from the GRF.
+func (a *Archive) RemoveAll(name string) error {
+	a.m.Lock()
+	defer a.m.Unlock()
+
+	a.doRemoveAll(name)
+	return nil
 }
 
 // writeFileTableAndHeader at the insert point and advance the insert point

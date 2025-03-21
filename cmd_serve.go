@@ -24,107 +24,59 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
-	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"ropa/grf"
 	"strings"
 
 	"golang.org/x/net/webdav"
 )
 
-// File adapter
-
-type grfFileWebdavAdapter struct {
-	ar   *grf.Archive
-	name string
-	af   *grf.ArchivedFile
-}
-
-func (a *grfFileWebdavAdapter) Read(p []byte) (int, error) {
-	return a.af.Read(p)
-}
-
-func (a *grfFileWebdavAdapter) Write(p []byte) (n int, err error) {
-	return 0, os.ErrInvalid
-}
-
-func (a *grfFileWebdavAdapter) Seek(offset int64, whence int) (int64, error) {
-	if offset == 0 && whence == io.SeekStart {
-		return 0, a.af.Reset()
-	} else if offset == 0 && whence == io.SeekEnd {
-		if err := a.Close(); err != nil {
-			return 0, err
-		}
-		if fi, err := a.af.Stat(); err == nil {
-			return fi.Size(), nil
-		}
-		return 0, nil // Shouldn't happen
+func pathFromURLPath(path string) string {
+	path, _ = strings.CutPrefix(path, "/")
+	path, _ = strings.CutSuffix(path, "/")
+	if path == "" {
+		path = "."
 	}
-	return 0, os.ErrInvalid
-}
-
-// Archive adapter
-
-func (a *grfFileWebdavAdapter) Close() error {
-	return a.af.Close()
-}
-
-func (a *grfFileWebdavAdapter) Readdir(count int) ([]fs.FileInfo, error) {
-	entries, err := a.ar.ReadDir(a.name)
-	if err != nil {
-		return nil, err
-	}
-	infos := make([]fs.FileInfo, len(entries))
-	for i, entry := range entries {
-		infos[i], _ = entry.Info()
-	}
-	return infos, nil
-}
-
-func (a *grfFileWebdavAdapter) Stat() (fs.FileInfo, error) {
-	return a.af.Stat()
+	return path
 }
 
 type grfArchiveWebdavAdapter struct {
-	ar *grf.Archive
+	ar       *grf.Archive
+	compress int
+	server   *http.Server
 }
 
 func (a *grfArchiveWebdavAdapter) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
-	return os.ErrPermission
+	return a.ar.Mkdir(pathFromURLPath(name))
 }
 
 func (a *grfArchiveWebdavAdapter) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (webdav.File, error) {
-	name, _ = strings.CutPrefix(name, "/")
-	name, _ = strings.CutSuffix(name, "/")
-	if name == "" {
-		name = "."
-	}
-	af, err := a.ar.Open(name)
-	if err != nil {
-		return nil, err
-	}
-	return &grfFileWebdavAdapter{a.ar, name, af.(*grf.ArchivedFile)}, nil
+	return a.ar.OpenFile(pathFromURLPath(name), flag, a.compress)
 }
 
 func (a *grfArchiveWebdavAdapter) RemoveAll(ctx context.Context, name string) error {
-	return os.ErrPermission
+	return a.ar.RemoveAll(pathFromURLPath(name))
 }
 
 func (a *grfArchiveWebdavAdapter) Rename(ctx context.Context, oldName, newName string) error {
-	return os.ErrPermission
+	if a.ar.Rename(pathFromURLPath(oldName), pathFromURLPath(newName)) {
+		return nil
+	}
+	return os.ErrNotExist
 }
 
 func (a *grfArchiveWebdavAdapter) Stat(ctx context.Context, name string) (os.FileInfo, error) {
-	name, _ = strings.CutPrefix(name, "/")
-	name, _ = strings.CutSuffix(name, "/")
-	if name == "" {
-		name = "."
-	}
-	return a.ar.Stat(name)
+	return a.ar.Stat(pathFromURLPath(name))
+}
+
+func (a *grfArchiveWebdavAdapter) handleClose(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(200)
+	w.Write([]byte("closing\n"))
+	go a.server.Shutdown(context.Background())
 }
 
 // Logging
@@ -162,11 +114,16 @@ func logServeRequest(handler http.Handler) http.Handler {
 
 // WebDAV via HTTP server
 
-func runServe(grfFilePath string, port int, koreanFilenames bool) bool {
-	ar, err := grf.Open(grfFilePath, true, koreanFilenames)
+func runServe(grfFilePath string, port, compress int, koreanFilenames, readOnly bool) bool {
+	ar, err := grf.Open(grfFilePath, readOnly, koreanFilenames)
 	if err != nil {
-		fmt.Println("Error while opening GRF file:", err)
-		return false
+		if !readOnly && os.IsNotExist(err) {
+			ar, err = grf.Create(grfFilePath, koreanFilenames)
+		}
+		if err != nil {
+			fmt.Println("Error while opening GRF file:", err)
+			return false
+		}
 	}
 	defer ar.Close()
 
@@ -174,23 +131,41 @@ func runServe(grfFilePath string, port int, koreanFilenames bool) bool {
 
 	log.SetFlags(log.Ldate | log.Ltime)
 
+	server := &http.Server{Handler: logServeRequest(http.DefaultServeMux)}
+	adapter := &grfArchiveWebdavAdapter{ar: ar, compress: compress, server: server}
+
 	handler := &webdav.Handler{
-		FileSystem: &grfArchiveWebdavAdapter{ar: ar},
+		FileSystem: adapter,
 		LockSystem: webdav.NewMemLS(),
 	}
 
+	http.HandleFunc("/close!", adapter.handleClose)
 	http.Handle("/", handler)
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
-		fmt.Println("Error while starting local server:", err)
+		log.Println("Error while starting local server:", err)
 		return false
 	}
 
-	fmt.Printf("Serving on http://127.0.0.1:%d/\n", port)
+	log.Printf("Serving on http://127.0.0.1:%d/\n", port)
 
-	server := &http.Server{Handler: logServeRequest(http.DefaultServeMux)}
+	sc := make(chan os.Signal, 1)
+	signal.Notify(sc, os.Interrupt)
+	defer signal.Stop(sc)
+	go func() {
+		<-sc
+		server.Shutdown(context.Background())
+	}()
+
 	server.Serve(listener)
+
+	err = ar.Close()
+	if err == nil {
+		log.Println("Archive closed.")
+	} else {
+		log.Println("Failed to close archive:", err)
+	}
 
 	return true
 }
