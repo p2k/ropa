@@ -140,11 +140,6 @@ func runChecksum(grfFilePath, checksumFilePath string, streamHash, tryFix, korea
 				}
 
 				fmt.Printf("%s ==> %v\n", n, e)
-				if rf, ferr := ar.OpenRaw(n); ferr == nil {
-					if data, rerr := io.ReadAll(rf); rerr == nil {
-						fmt.Println(data)
-					}
-				}
 			}
 			for _, n := range resolved {
 				delete(ierr.FileErrors, n)
