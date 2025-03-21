@@ -42,6 +42,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ulikunitz/xz/lzma"
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/korean"
 	"lukechampine.com/blake3"
@@ -182,6 +183,33 @@ type ArchiveError struct {
 
 func (e *ArchiveError) Error() string {
 	return e.msg
+}
+
+func newLZLIBReader(r io.Reader, uncompressedSize uint32) (io.ReadCloser, error) {
+	br := bufio.NewReader(r)
+	lzmaDetect, err := br.ReadByte()
+	if err != nil {
+		return nil, err
+	}
+	if lzmaDetect == 0 {
+		header := make([]byte, lzma.HeaderLen)
+		_, err := io.ReadFull(br, header[:lzma.HeaderLen-8])
+		if err != nil {
+			return nil, err
+		}
+		binary.LittleEndian.PutUint64(header[lzma.HeaderLen-8:], uint64(uncompressedSize))
+		lr, err := lzma.NewReader(io.MultiReader(bytes.NewBuffer(header), br))
+		if err != nil {
+			return nil, err
+		}
+		return io.NopCloser(lr), nil
+	} else {
+		err = br.UnreadByte()
+		if err != nil {
+			return nil, err
+		}
+		return zlib.NewReader(br)
+	}
 }
 
 // FileHeaderHash represents the BLAKE3-256 hash of a file.
@@ -1199,7 +1227,7 @@ func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 	}
 	var zr io.ReadCloser
 	if h.Flags&FileFlag != 0 {
-		zr, err = zlib.NewReader(lr)
+		zr, err = newLZLIBReader(lr, h.Size)
 		if err != nil {
 			return 0, err
 		}

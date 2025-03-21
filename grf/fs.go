@@ -23,7 +23,6 @@ package grf
 
 import (
 	"bytes"
-	"compress/zlib"
 	"hash"
 	"io"
 	"io/fs"
@@ -153,7 +152,7 @@ func (f *ArchivedFile) doReset() error {
 		}
 		if !f.raw {
 			var err error
-			f.zr, err = zlib.NewReader(lr)
+			f.zr, err = newLZLIBReader(lr, f.h.Size)
 			if err != nil {
 				return err
 			}

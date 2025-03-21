@@ -22,7 +22,6 @@
 package grf
 
 import (
-	"compress/zlib"
 	"context"
 	"fmt"
 	"hash"
@@ -91,7 +90,7 @@ func (h *FileHeader) seekAndHash(file io.ReadSeekCloser, hasher, streamHasher ha
 		if streamHasher != nil {
 			lr = io.TeeReader(lr, streamHasher)
 		}
-		zr, err = zlib.NewReader(lr)
+		zr, err = newLZLIBReader(lr, h.Size)
 		if err != nil {
 			if streamHasher != nil {
 				streamHasher.Reset()

@@ -5,6 +5,7 @@ go 1.23.0
 require (
 	github.com/dustin/go-humanize v1.0.1
 	github.com/schollz/progressbar/v3 v3.13.1
+	github.com/ulikunitz/xz v0.5.12
 	golang.org/x/net v0.37.0
 	golang.org/x/text v0.23.0
 	lukechampine.com/blake3 v1.2.1
