@@ -27,9 +27,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -93,10 +95,10 @@ func (s *SymlinksFile) deleteFolderEntry(name string) {
 	}
 }
 
-// OpenSymlinks file at the given folder path (if it exists).
+// OpenSymlinks file at the given path or folder path (if it exists).
 //
-// The folder at the given path must exist. The symlinks file is put into append
-// mode until you do a destructive operation.
+// The file or folder at the given path must exist. The symlinks file is put
+// into append mode until you do a destructive operation.
 func OpenSymlinks(path string) (*SymlinksFile, error) {
 	path, err := filepath.Abs(path)
 	if err != nil {
@@ -106,13 +108,12 @@ func OpenSymlinks(path string) (*SymlinksFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !fi.IsDir() {
-		return nil, errors.New("path must point to a directory")
-	}
-	path = filepath.Join(path, "SYMLINKS")
-	fi, err = os.Stat(path)
-	if err == nil && fi.IsDir() {
-		return nil, errors.New("the symlinks file cannot be a directory")
+	if fi.IsDir() {
+		path = filepath.Join(path, "SYMLINKS")
+		fi, err = os.Stat(path)
+		if err == nil && fi.IsDir() {
+			return nil, errors.New("the symlinks file cannot be a directory")
+		}
 	}
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -183,9 +184,7 @@ func (s *SymlinksFile) Get(name string) string {
 func (s *SymlinksFile) GetAll() map[string]string {
 	r := make(map[string]string)
 	if s.linkMap != nil {
-		for k, v := range s.linkMap {
-			r[k] = v
-		}
+		maps.Copy(r, s.linkMap)
 	}
 	return r
 }
@@ -248,7 +247,7 @@ func (s *SymlinksFile) Remove(name string) {
 //
 // If the file is in append mode, this simply closes the file if it is open.
 // In regular mode, this writes the entire file if there are symlinks or deletes
-// the file if there are no symlinks.
+// the file if there are no symlinks. After this, append mode is enabled again.
 func (s *SymlinksFile) Write() error {
 	if s.append {
 		if s.file != nil {
@@ -277,8 +276,77 @@ func (s *SymlinksFile) Write() error {
 		for name, target := range s.linkMap {
 			f.WriteString(fmt.Sprintln(name, "->", target))
 		}
-		return f.Close()
+		err = f.Close()
+		if err != nil {
+			return err
+		}
 	}
+
+	s.append = true
+
+	return nil
+}
+
+// Write the symlink file sorted by paths.
+//
+// This should be run separately since it costs some time depending on the
+// number of entries and forces a rewrite of the entire file.
+func (s *SymlinksFile) WriteSorted() error {
+	s.append = false
+	if s.file != nil {
+		s.file.Close()
+		s.file = nil
+	}
+
+	if len(s.linkMap) == 0 {
+		_, err := os.Stat(s.Name)
+		if err == nil {
+			err = os.Remove(s.Name)
+			if err != nil {
+				return err
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	} else if !s.append {
+		f, err := os.Create(s.Name)
+		if err != nil {
+			return err
+		}
+		var paths []string
+		for path := range s.linkMap {
+			paths = append(paths, path)
+		}
+		slices.SortStableFunc(paths, func(a, b string) int {
+			if a == b {
+				return 0
+			}
+			aSpl := strings.Split(a, "/")
+			aSplN := len(aSpl)
+			bSpl := strings.Split(b, "/")
+			bSplN := len(bSpl)
+			i := 0
+			for i < aSplN && i < bSplN && aSpl[i] == bSpl[i] {
+				i++
+			}
+			if aSplN-i == 1 && bSplN-i > 1 {
+				return -1
+			}
+			if aSplN-i > 1 && bSplN-i == 1 {
+				return 1
+			}
+			return strings.Compare(aSpl[i], bSpl[i])
+		})
+		for _, path := range paths {
+			f.WriteString(fmt.Sprintln(path, "->", s.linkMap[path]))
+		}
+		err = f.Close()
+		if err != nil {
+			return err
+		}
+	}
+
+	s.append = true
 
 	return nil
 }

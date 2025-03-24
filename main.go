@@ -51,6 +51,7 @@ func printUsage() {
    optimize   Optimize a GRF file
    recompress Recompress a GRF file
    filebase   Build a filebase
+   symsort    Sort a symlink file
    beamsonly  Build the beams-only GRF
    serve      Serve a GRF through WebDAV
 `, os.Args[0])
@@ -120,7 +121,7 @@ Input files can contain glob patterns. Folders are added recursively.`)
 
 	filebase := flag.NewFlagSet("filebase", flag.ExitOnError)
 	setSubcommandUsage(filebase, `<filebase file> [<input files...>]
-The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input files can contain glob patterns. Folders are added recursively; .git and .gitignore are excluded. GRF files are not ignored on these paths and will be added as regular files, so be careful; also see the "-grf" option.`)
+The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input files can contain glob patterns. Folders are added recursively; files/folders starting with a "." are excluded. GRF files are not ignored on these paths and will be added as regular files, so be careful; also see the "-grf" option.`)
 	filebaseGRF := filebase.String("grf", "", "Path to a GRF file or folder to be used as its root; will be excluded from input files; if the folder name is \"data\", this will prefix all paths with \"data\"")
 	filebaseGRFName := filebase.String("grfname", "", "Name override for the GRF file without extension (used to merge GRF contents)")
 	filebaseWhiteout := filebase.String("whiteout", "", "Path to a file containing a list of file names to whiteout")
@@ -128,6 +129,9 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 	filebaseCompress := filebase.Int("compress", 15, "Compression level")
 	filebaseCP1252 := filebase.Bool("cp1252", false, "Use mangled filenames instead of Korean")
 	filebaseQuiet := filebase.Bool("quiet", false, "Don't show progress")
+
+	symsort := flag.NewFlagSet("symsort", flag.ExitOnError)
+	setSubcommandUsage(symsort, `<symlink file>`)
 
 	beamsonly := flag.NewFlagSet("beamsonly", flag.ExitOnError)
 	setSubcommandUsage(beamsonly, "<grf files...>")
@@ -288,6 +292,17 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 		}
 		args := filebase.Args()
 		if !runFilebase(args[0], args[1:], *filebaseGRF, *filebaseGRFName, *filebaseWhiteout, *filebaseContent, *filebaseCompress, !*filebaseCP1252, *filebaseQuiet) {
+			os.Exit(1)
+		}
+	case "symsort":
+		symsort.Parse(os.Args[2:])
+		if symsort.NArg() < 1 {
+			fmt.Println("Error: missing path to symlink file")
+			symsort.Usage()
+			os.Exit(1)
+		}
+		args := symsort.Args()
+		if !runSymsort(args[0]) {
 			os.Exit(1)
 		}
 	case "contentcheck":

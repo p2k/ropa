@@ -45,6 +45,7 @@ func (e *ArchiveIntegrityError) Error() string {
 	for k := range e.FileErrors {
 		if i == 100 {
 			keys = append(keys, "...")
+			break
 		}
 		keys = append(keys, k)
 	}

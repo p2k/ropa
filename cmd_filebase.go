@@ -189,10 +189,10 @@ func newFilebaseBuilder() *filebaseBuilder {
 	}
 
 	master := make([]byte, 32)
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		master[i] = ' '
 	}
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		b.indent[i] = master[:(i+1)*2]
 	}
 
@@ -547,7 +547,7 @@ func runFilebase(filebaseFilePath string, inputFilePathsPatterns []string, grfFi
 				}
 				pathspl := strings.Split(sanitizedPath, sep)
 				basename := pathspl[len(pathspl)-1]
-				if realpath == grfFilePath || basename == ".git" || basename == ".gitignore" {
+				if realpath == grfFilePath || basename == ".git" || basename[0] == '.' {
 					if d.IsDir() {
 						return filepath.SkipDir
 					}
@@ -696,7 +696,7 @@ func runFilebase(filebaseFilePath string, inputFilePathsPatterns []string, grfFi
 				cmppath := strings.ToLower(sanitizedPath)
 				pathspl := strings.Split(sanitizedPath, "/")
 				basename := pathspl[len(pathspl)-1]
-				if basename != "symlinks" && basename != ".gitignore" && !d.IsDir() {
+				if basename != "symlinks" && basename[0] != '.' && !d.IsDir() {
 					fi, err := d.Info()
 					if err != nil {
 						return err
