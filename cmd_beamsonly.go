@@ -31,7 +31,7 @@ import (
 const silenceWavZBase64 = "eNoL8nRzK2JlYAh3DHNNyy1REGBgYGAEQqUwBgaXNQwMTAwCDD6ewSFSQHFPPzd/z2C3ED4g2yexLM3UQs/IUs/QwIAhJbEkUYeVgQgwCkbBKBgFowAA9mEOpA=="
 const silenceWavSize = 1402
 
-func runBeamsonly(grfFilePaths []string, beamsonlyGRFPath string) bool {
+func runBeamsonly(grfFilePaths []string, beamsonlyGRFPath, keyFilePath string) bool {
 	silence := make(map[string]bool)
 	for _, path := range grfFilePaths {
 		fmt.Println("Loading", path, "...")
@@ -53,6 +53,10 @@ func runBeamsonly(grfFilePaths []string, beamsonlyGRFPath string) bool {
 	ar, err := grf.Create(beamsonlyGRFPath, true)
 	if err != nil {
 		fmt.Println("Error:", err)
+		return false
+	}
+
+	if !loadSetEncryptionKeyWithFile(keyFilePath, true, ar) {
 		return false
 	}
 

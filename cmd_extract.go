@@ -33,13 +33,17 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
-func runExtract(grfFilePath string, outputPatterns []string, outputFolderPath string, raw, ignoreErrors, koreanFilenames, quiet bool) bool {
+func runExtract(grfFilePath, keyFilePath string, outputPatterns []string, outputFolderPath string, raw, ignoreErrors, koreanFilenames, quiet bool) bool {
 	ar, err := grf.Open(grfFilePath, true, koreanFilenames)
 	if err != nil {
 		fmt.Println("Error while opening GRF file:", err)
 		return false
 	}
 	defer ar.Close()
+
+	if !loadSetEncryptionKeyWithFile(keyFilePath, false, ar) {
+		return false
+	}
 
 	ofi, err := os.Stat(outputFolderPath)
 	if err != nil {

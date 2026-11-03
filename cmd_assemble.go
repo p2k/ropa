@@ -48,7 +48,7 @@ func unquoteIfNeeded(q string) string {
 	return u
 }
 
-func runAssemble(grfFilePath, filebasePath, contentDirPath string, quiet bool) bool {
+func runAssemble(grfFilePath, filebasePath, contentDirPath, keyFilePath string, quiet bool) bool {
 	fb, err := os.Open(filebasePath)
 	if err != nil {
 		fmt.Println("Error while opening filebase:", err)
@@ -83,6 +83,10 @@ func runAssemble(grfFilePath, filebasePath, contentDirPath string, quiet bool) b
 		return false
 	}
 	defer ar.Close()
+
+	if !loadSetEncryptionKeyWithFile(keyFilePath, true, ar) {
+		return false
+	}
 
 	var totalSize int64
 	gotType := false

@@ -24,3 +24,9 @@ ropa
 
 # Go workspace file
 go.work
+
+# VSCode
+/.vscode/
+
+# Scrap
+/scrap/

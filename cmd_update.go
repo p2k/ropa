@@ -46,7 +46,7 @@ type updateEntry struct {
 	linkpath  string
 }
 
-func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipeline, koreanFilenames, quiet bool) bool {
+func runUpdate(grfFilePath, keyFilePath string, inputPatterns []string, compress int, pipeline, koreanFilenames, quiet bool) bool {
 	cwd, err := os.Getwd()
 	if err != nil {
 		fmt.Println("Error while getting current directory:", err)
@@ -62,6 +62,10 @@ func runUpdate(grfFilePath string, inputPatterns []string, compress int, pipelin
 		return false
 	}
 	defer ar.Close()
+
+	if !loadSetEncryptionKeyWithFile(keyFilePath, true, ar) {
+		return false
+	}
 
 	var bar *progressbar.ProgressBar
 	if !quiet {

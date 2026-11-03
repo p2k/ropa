@@ -31,19 +31,28 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
-func runRecompress(inputFilePath, outputFilePath string, level int, pipeline, quiet bool) bool {
+func runRecompress(inputFilePath, outputFilePath, keyFilePath string, level int, pipeline, quiet bool) bool {
 	srcGrf, err := grf.Open(inputFilePath, true, true)
 	if err != nil {
 		fmt.Println("Error while opening GRF file:", err)
 		return false
 	}
 	defer srcGrf.Close()
+
+	if !loadSetEncryptionKeyWithFile(keyFilePath, false, srcGrf) {
+		return false
+	}
+
 	dstGrf, err := grf.Create(outputFilePath, true)
 	if err != nil {
 		fmt.Println("Error while creating GRF file:", err)
 		return false
 	}
 	defer dstGrf.Close()
+
+	if !loadSetEncryptionKeyWithFile(keyFilePath, true, dstGrf) {
+		return false
+	}
 
 	totalUncompressed := srcGrf.TotalUncompressedSize()
 

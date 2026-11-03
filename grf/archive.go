@@ -57,15 +57,27 @@ var (
 
 	// ErrReadOnly is returned if an attempt is made to write to a read only archive.
 	ErrReadOnly = errors.New("archive is read only")
+
+	// ErrInvalidKeyLength is returned if the provided encryption key does not have the correct length.
+	ErrInvalidKeyLength = errors.New("invalid key length")
+
+	// ErrInvalidKey is returned if the provided encryption key is invalid.
+	ErrInvalidKey = errors.New("invalid encryption key")
 )
 
 const (
+	// LogicalStartOffset is the offset where the logical data of the GRF starts.
+	LogicalStartOffset = 46
+
 	// FileFlag describes a regular compressed file. It should be set for every FileHeader.
 	FileFlag = 1
 	// MixcryptFlag describes a mixcrypt encrypted file (obsolete).
 	MixcryptFlag = 2
 	// DESFlag describes a DES encrypted file (obsolete).
 	DESFlag = 4
+
+	// EncryptionInfoFileName is the internal name of the marker file for encryption which also holds the CRC32 of the key.
+	EncryptionInfoFileName = "__encryption.info"
 )
 
 func padding(s uint32) uint32 {
@@ -185,31 +197,84 @@ func (e *ArchiveError) Error() string {
 	return e.msg
 }
 
-func newLZLIBReader(r io.Reader, uncompressedSize uint32) (io.ReadCloser, error) {
+func isZLIBHeader(header []byte) bool {
+	h := binary.BigEndian.Uint16(header)
+	if (header[0]&0x0f != 8) || (header[0]>>4 > 7) || (h%31 != 0) {
+		return false
+	}
+	return true
+}
+
+func isLZMAHeader(header []byte) bool {
+	_, err := lzma.PropertiesForCode(header[0])
+	if err != nil {
+		return false
+	}
+	if int(binary.LittleEndian.Uint32(header[1:])) < 0 {
+		return false
+	}
+	return true
+}
+
+func newDecodingReader(r io.Reader, h *FileHeader, grfEncryptionKey []byte) (io.ReadCloser, error) {
 	br := bufio.NewReader(r)
-	lzmaDetect, err := br.ReadByte()
+	header, err := br.Peek(2)
 	if err != nil {
 		return nil, err
 	}
-	if lzmaDetect == 0 {
+
+	// First test if LZMA is indicated
+	isLZMA := false
+	if header[0] == 0 {
+		// Now properly test for LZMA
+		header, err = br.Peek(lzma.HeaderLen - 7)
+		if err == nil && isLZMAHeader(header) {
+			isLZMA = true
+		}
+	}
+	isZLIB := !isLZMA
+	if !isLZMA {
+		// Test if there's a zlib header
+		isZLIB = isZLIBHeader(header)
+	}
+
+	// If it's neither and we have an encryption key, assume it's encrypted
+	if !isLZMA && !isZLIB && grfEncryptionKey != nil {
+		h.GRFEditorEncrypted = true
+		br = bufio.NewReader(newGRFEditorCipher(br, nil, grfEncryptionKey, h.Size))
+		// Round two: check again for LZMA
+		header, err = br.Peek(1)
+		if err != nil {
+			return nil, err
+		}
+		if header[0] == 0 {
+			header, err = br.Peek(lzma.HeaderLen - 7)
+			if err == nil && isLZMAHeader(header) {
+				isLZMA = true
+			}
+		}
+		// On encryption error, the following code will (automatically) fail
+	} else {
+		h.GRFEditorEncrypted = false
+	}
+	h.GRFEditorEncryptionChecked = true
+
+	if isLZMA {
+		br.ReadByte() // consume the null byte
 		header := make([]byte, lzma.HeaderLen)
 		_, err := io.ReadFull(br, header[:lzma.HeaderLen-8])
 		if err != nil {
 			return nil, err
 		}
-		binary.LittleEndian.PutUint64(header[lzma.HeaderLen-8:], uint64(uncompressedSize))
+		binary.LittleEndian.PutUint64(header[lzma.HeaderLen-8:], uint64(h.Size))
 		lr, err := lzma.NewReader(io.MultiReader(bytes.NewBuffer(header), br))
 		if err != nil {
 			return nil, err
 		}
 		return io.NopCloser(lr), nil
-	} else {
-		err = br.UnreadByte()
-		if err != nil {
-			return nil, err
-		}
-		return zlib.NewReader(br)
 	}
+
+	return zlib.NewReader(br)
 }
 
 // FileHeaderHash represents the BLAKE3-256 hash of a file.
@@ -327,6 +392,16 @@ type FileHeader struct {
 
 	// Deleted marks the file as deleted.
 	Deleted bool
+
+	// GRFEditorEncrypted indicates if the file is encrypted using GRF Editor style encryption.
+	//
+	// Its value is only reliable if GRFEditorEncryptionChecked is true.
+	GRFEditorEncrypted bool
+
+	// GRFEditorEncryptionChecked indicates if the encryption status has been checked.
+	//
+	// Manipulating this value directly is discouraged.
+	GRFEditorEncryptionChecked bool
 
 	// Hash is a BLAKE3-256 hash of the file's contents.
 	Hash FileHeaderHash
@@ -448,10 +523,15 @@ type Archive struct {
 	// FileTableSize is the uncompressed size of the file table in bytes.
 	FileTableSize uint32
 
-	// AllowHybridFolderEntries influences how Open and OpenRaw treat entries that are both a folders and files.
+	// AllowHybridFolderEntries influences how Open and OpenRaw treat entries that are both folders and files.
 	//
 	// This is mainly for WebDAV support.
 	AllowHybridFolderEntries bool
+
+	// GRFEditorEncryptionEnabled indicates whether GRF Editor style encryption is enabled.
+	//
+	// It will affect the next Put operation. This has no effect unless a GRF Editor key has been set.
+	GRFEditorEncryptionEnabled bool
 
 	entriesInSequence []*FileHeader
 	entriesByName     map[string]*FileHeader
@@ -463,6 +543,8 @@ type Archive struct {
 	insertOffset uint32
 	m            sync.RWMutex
 	lf           *ArchivedFile // last used archived file
+
+	grfEditorKey []byte
 }
 
 // Create creates and opens a new GRF file at the given path.
@@ -651,7 +733,7 @@ func OpenIO(file io.ReadSeekCloser, fileSize uint32, koreanFilenames bool) (*Arc
 	if !koreanFilenames {
 		d = InsaneFileNameDecoder
 	}
-	_, err = file.Seek(int64(a.FileTableOffset)+46, io.SeekStart)
+	_, err = file.Seek(int64(a.FileTableOffset)+LogicalStartOffset, io.SeekStart)
 	if err != nil {
 		return nil, err
 	}
@@ -660,7 +742,7 @@ func OpenIO(file io.ReadSeekCloser, fileSize uint32, koreanFilenames bool) (*Arc
 		return nil, err
 	}
 	a.FileTableCompressedSize = binary.LittleEndian.Uint32(v)
-	if a.FileTableOffset+a.FileTableCompressedSize+46 > fileSize {
+	if a.FileTableOffset+a.FileTableCompressedSize+LogicalStartOffset > fileSize {
 		return nil, &ArchiveError{"truncated file"}
 	}
 	a.FileTableSize = binary.LittleEndian.Uint32(v[4:])
@@ -713,7 +795,7 @@ func OpenIO(file io.ReadSeekCloser, fileSize uint32, koreanFilenames bool) (*Arc
 	} else {
 		a.insertOffset = a.FileTableOffset + 8 + a.FileTableCompressedSize
 		pad := padding(a.FileTableCompressedSize)
-		if fileSize >= a.insertOffset+46+pad {
+		if fileSize >= a.insertOffset+LogicalStartOffset+pad {
 			// Padded file table
 			a.insertOffset += pad
 		}
@@ -796,8 +878,8 @@ func (a *Archive) Head(name string) *FileHeader {
 
 // RawPut inserts or replaces a file in the GRF directly.
 //
-// The given data stream needs to already be compressed correctly.
-// Will calculate the StreamHash only.
+// The given data stream needs to already be compressed and/or encrypted
+// correctly. Will calculate the stream hash only.
 func (a *Archive) RawPut(name string, r io.Reader, uncompressedSize uint32, flags uint8) (*FileHeader, error) {
 	if a.wfile == nil {
 		return nil, ErrReadOnly
@@ -807,12 +889,12 @@ func (a *Archive) RawPut(name string, r io.Reader, uncompressedSize uint32, flag
 	defer a.m.Unlock()
 
 	streamHasher := blake3.New(32, nil)
+	ttr := &testingTeeReaderWriter{r: r, w: streamHasher}
 	err := a.preparePut(name)
 	if err != nil {
 		return nil, err
 	}
-	t := io.TeeReader(r, streamHasher)
-	_, err = io.Copy(a.wfile, t)
+	_, err = io.Copy(a.wfile, ttr)
 	if err != nil {
 		return nil, err
 	}
@@ -820,16 +902,20 @@ func (a *Archive) RawPut(name string, r io.Reader, uncompressedSize uint32, flag
 	if err != nil {
 		return nil, err
 	}
+	if h.Flags&FileFlag != 0 {
+		h.GRFEditorEncrypted = ttr.IsMaybeEncrypted()
+	}
+	h.GRFEditorEncryptionChecked = true
+	h.Hash.SetZero()
 	h.StreamHash.SetWithHasher(streamHasher)
 	return h, nil
 }
 
 // RawPutBytes inserts or replaces a file in the GRF directly.
 //
-// The given bytes need to already be compressed correctly.
-// Will calculate the stream hash only, except if the file is not marked as
-// compressed where it will also set the content hash since they are identical.
-func (a *Archive) RawPutBytes(name string, b []byte, uncompressedSize uint32, flags uint8) (*FileHeader, error) {
+// The given bytes need to already be compressed and/or encrypted correctly.
+// Will calculate the stream hash only.
+func (a *Archive) RawPutBytes(name string, data []byte, uncompressedSize uint32, flags uint8) (*FileHeader, error) {
 	if a.wfile == nil {
 		return nil, ErrReadOnly
 	}
@@ -838,15 +924,16 @@ func (a *Archive) RawPutBytes(name string, b []byte, uncompressedSize uint32, fl
 	defer a.m.Unlock()
 
 	streamHasher := blake3.New(32, nil)
+	ttw := &testingTeeReaderWriter{w: streamHasher}
 	err := a.preparePut(name)
 	if err != nil {
 		return nil, err
 	}
-	_, err = streamHasher.Write(b)
+	_, err = ttw.Write(data)
 	if err != nil {
 		return nil, err
 	}
-	_, err = a.wfile.Write(b)
+	_, err = a.wfile.Write(data)
 	if err != nil {
 		return nil, err
 	}
@@ -854,10 +941,12 @@ func (a *Archive) RawPutBytes(name string, b []byte, uncompressedSize uint32, fl
 	if err != nil {
 		return nil, err
 	}
-	h.StreamHash.SetWithHasher(streamHasher)
-	if flags&FileFlag == 0 {
-		h.Hash.SetWithHasher(streamHasher)
+	if h.Flags&FileFlag != 0 {
+		h.GRFEditorEncrypted = ttw.IsMaybeEncrypted()
 	}
+	h.GRFEditorEncryptionChecked = true
+	h.Hash.SetZero()
+	h.StreamHash.SetWithHasher(streamHasher)
 	return h, nil
 }
 
@@ -868,6 +957,11 @@ func (a *Archive) RawPutBytes(name string, b []byte, uncompressedSize uint32, fl
 // can be used to set flags or create hard links. The last parameter can be
 // used to set the compression level. Values > 9 will use Zopfli compression
 // with the given number of iterations; 15 is the recommended default for this.
+//
+// If compression is enabled and a GRF Editor encryption key is present and
+// encryption is enabled, the data will be encrypted accordingly. This can
+// happen in a second pass, because the uncompressed file size needs to be known
+// beforehand.
 func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, error) {
 	if a.wfile == nil {
 		return nil, ErrReadOnly
@@ -875,6 +969,8 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 
 	a.m.Lock()
 	defer a.m.Unlock()
+
+	encrypt := compress != 0 && a.GRFEditorEncryptionEnabled && a.grfEditorKey != nil
 
 	hasher := blake3.New(32, nil)
 	streamHasher := blake3.New(32, nil)
@@ -891,7 +987,11 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 		if compress != 0 {
 			flags = FileFlag
 			w, err = zlib.NewWriterLevel(a.wfile, compress)
-			tw = io.MultiWriter(w, streamHasher)
+			if encrypt {
+				tw = w
+			} else {
+				tw = io.MultiWriter(w, streamHasher)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -910,6 +1010,18 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 				return nil, err
 			}
 		}
+		if encrypt {
+			realStart := int64(a.insertOffset) - LogicalStartOffset
+			realEnd, err := a.wfile.Seek(0, io.SeekCurrent)
+			if err != nil {
+				return nil, err
+			}
+			c := newGRFEditorCipher(nil, nil, a.grfEditorKey, uint32(s))
+			err = c.encipherInFile(a.wfile, streamHasher, realStart, realEnd-realStart)
+			if err != nil {
+				return nil, err
+			}
+		}
 	} else {
 		w := &bytes.Buffer{}
 		s, err = io.Copy(w, tr)
@@ -918,6 +1030,10 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 		}
 		b := w.Bytes()
 		b = zopfli.Zlib(b, compress, b)
+		if encrypt {
+			c := newGRFEditorCipher(nil, nil, a.grfEditorKey, uint32(s))
+			c.encipherBlock(b)
+		}
 		_, err = streamHasher.Write(b)
 		if err != nil {
 			return nil, err
@@ -928,6 +1044,8 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 		}
 	}
 	h, err := a.finalizePut(name, uint32(s), flags)
+	h.GRFEditorEncrypted = encrypt
+	h.GRFEditorEncryptionChecked = true
 	if err != nil {
 		return nil, err
 	}
@@ -937,6 +1055,9 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 }
 
 // PutBytes inserts or replaces a file in the GRF using a byte array.
+//
+// If compression is enabled and a GRF Editor encryption key is present and
+// encryption is enabled, the data will be encrypted accordingly.
 func (a *Archive) PutBytes(name string, p []byte, compress int) (*FileHeader, error) {
 	if a.wfile == nil {
 		return nil, ErrReadOnly
@@ -945,6 +1066,8 @@ func (a *Archive) PutBytes(name string, p []byte, compress int) (*FileHeader, er
 	a.m.Lock()
 	defer a.m.Unlock()
 
+	encrypt := compress != 0 && a.GRFEditorEncryptionEnabled && a.grfEditorKey != nil
+
 	hasher := blake3.New(32, nil)
 	streamHasher := blake3.New(32, nil)
 	err := a.preparePut(name)
@@ -952,7 +1075,7 @@ func (a *Archive) PutBytes(name string, p []byte, compress int) (*FileHeader, er
 		return nil, err
 	}
 
-	var s int
+	s := uint32(len(p))
 	var flags uint8
 	if compress < 10 {
 		var w io.WriteCloser
@@ -960,16 +1083,19 @@ func (a *Archive) PutBytes(name string, p []byte, compress int) (*FileHeader, er
 		if compress != 0 {
 			flags = FileFlag
 			w, err = zlib.NewWriterLevel(a.wfile, compress)
-			tw = io.MultiWriter(w, streamHasher)
 			if err != nil {
 				return nil, err
 			}
+			if encrypt {
+				w = newGRFEditorCipher(nil, w, a.grfEditorKey, s)
+			}
+			tw = io.MultiWriter(w, streamHasher)
 		} else {
 			streamHasher = hasher
 			w = a.wfile
 			tw = w
 		}
-		s, err = tw.Write(p)
+		_, err = tw.Write(p)
 		if err != nil {
 			return nil, err
 		}
@@ -982,6 +1108,10 @@ func (a *Archive) PutBytes(name string, p []byte, compress int) (*FileHeader, er
 	} else {
 		b := make([]byte, len(p))
 		b = zopfli.Zlib(p, compress, b)
+		if encrypt {
+			c := newGRFEditorCipher(nil, nil, a.grfEditorKey, s)
+			c.encipherBlock(b)
+		}
 		_, err = streamHasher.Write(b)
 		if err != nil {
 			return nil, err
@@ -991,7 +1121,9 @@ func (a *Archive) PutBytes(name string, p []byte, compress int) (*FileHeader, er
 			return nil, err
 		}
 	}
-	h, err := a.finalizePut(name, uint32(s), flags)
+	h, err := a.finalizePut(name, s, flags)
+	h.GRFEditorEncrypted = encrypt
+	h.GRFEditorEncryptionChecked = true
 	if err != nil {
 		return nil, err
 	}
@@ -1007,7 +1139,7 @@ func (a *Archive) preparePut(name string) error {
 	if a.lf != nil {
 		a.lf = nil
 	}
-	_, err := a.wfile.Seek(int64(a.insertOffset)+46, io.SeekStart)
+	_, err := a.wfile.Seek(int64(a.insertOffset)+LogicalStartOffset, io.SeekStart)
 	if err != nil {
 		return err
 	}
@@ -1027,7 +1159,7 @@ func (a *Archive) finalizePut(name string, uncompressedSize uint32, flags uint8)
 	if err != nil {
 		return nil, err
 	}
-	cs := uint32(realEnd - int64(a.insertOffset) - 46)
+	cs := uint32(realEnd - int64(a.insertOffset) - LogicalStartOffset)
 	pad := padding(cs)
 	if pad > 0 {
 		_, err = a.wfile.Write(make([]byte, pad))
@@ -1166,20 +1298,30 @@ func (a *Archive) RawGet(name string, w io.Writer) (int64, error) {
 		a.lf = nil
 	}
 
-	_, err := a.rfile.Seek(int64(h.Offset)+46, io.SeekStart)
+	_, err := a.rfile.Seek(int64(h.Offset)+LogicalStartOffset, io.SeekStart)
 	if err != nil {
 		return 0, err
 	}
 	var streamHasher hash.Hash
 	lr := io.LimitReader(a.rfile, int64(h.CompressedSize))
+	ttrw := &testingTeeReaderWriter{r: lr, w: w}
+	var s int64
 	if h.StreamHash.IsZero() {
 		streamHasher = blake3.New(32, nil)
-		lr = io.TeeReader(lr, streamHasher)
+		ttrw.w = streamHasher
+		s, err = io.Copy(w, ttrw)
+	} else {
+		s, err = io.Copy(ttrw, lr)
 	}
-	s, err := io.Copy(w, lr)
 	if err != nil {
 		return 0, err
 	}
+	if h.Flags&FileFlag != 0 {
+		h.GRFEditorEncrypted = ttrw.IsMaybeEncrypted()
+	} else {
+		h.GRFEditorEncrypted = false
+	}
+	h.GRFEditorEncryptionChecked = true
 	if streamHasher != nil {
 		h.StreamHash.SetWithHasher(streamHasher)
 	}
@@ -1206,7 +1348,7 @@ func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 		a.lf = nil
 	}
 
-	_, err := a.rfile.Seek(int64(h.Offset)+46, io.SeekStart)
+	_, err := a.rfile.Seek(int64(h.Offset)+LogicalStartOffset, io.SeekStart)
 	if err != nil {
 		return 0, err
 	}
@@ -1227,7 +1369,7 @@ func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 	}
 	var zr io.ReadCloser
 	if h.Flags&FileFlag != 0 {
-		zr, err = newLZLIBReader(lr, h.Size)
+		zr, err = newDecodingReader(lr, h, a.grfEditorKey)
 		if err != nil {
 			return 0, err
 		}
@@ -1236,6 +1378,8 @@ func (a *Archive) Get(name string, w io.Writer) (int64, error) {
 		if streamHasher != nil {
 			hasher = streamHasher
 		}
+		h.GRFEditorEncrypted = false
+		h.GRFEditorEncryptionChecked = true
 	}
 	var r io.Reader
 	if hasher != nil && hasher != streamHasher {
@@ -1421,7 +1565,7 @@ func (a *Archive) writeFileTableAndHeader(truncate bool) error {
 		a.insertOffset = highestOffset
 	}
 
-	_, err := a.wfile.Seek(int64(a.insertOffset)+46, io.SeekStart)
+	_, err := a.wfile.Seek(int64(a.insertOffset)+LogicalStartOffset, io.SeekStart)
 	if err != nil {
 		return err
 	}
@@ -1486,7 +1630,7 @@ func (a *Archive) writeFileTableAndHeader(truncate bool) error {
 
 	binary.LittleEndian.PutUint32(v, a.FileTableCompressedSize)
 	binary.LittleEndian.PutUint32(v[4:], a.FileTableSize)
-	_, err = a.wfile.WriteAt(v[:8], int64(a.FileTableOffset)+46)
+	_, err = a.wfile.WriteAt(v[:8], int64(a.FileTableOffset)+LogicalStartOffset)
 	if err != nil {
 		return err
 	}

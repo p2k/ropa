@@ -114,7 +114,7 @@ func logServeRequest(handler http.Handler) http.Handler {
 
 // WebDAV via HTTP server
 
-func runServe(grfFilePath string, port, compress int, koreanFilenames, readOnly bool) bool {
+func runServe(grfFilePath, keyFilePath string, port, compress int, koreanFilenames, readOnly bool) bool {
 	ar, err := grf.Open(grfFilePath, readOnly, koreanFilenames)
 	if err != nil {
 		if !readOnly && os.IsNotExist(err) {
@@ -126,6 +126,10 @@ func runServe(grfFilePath string, port, compress int, koreanFilenames, readOnly 
 		}
 	}
 	defer ar.Close()
+
+	if !loadSetEncryptionKeyWithFile(keyFilePath, !readOnly, ar) {
+		return false
+	}
 
 	ar.AllowHybridFolderEntries = true
 

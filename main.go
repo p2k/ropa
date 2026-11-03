@@ -46,8 +46,11 @@ func printUsage() {
    list       List files in a GRF file
    extract    Extract a GRF file
    update     Update a GRF file
+   rename     Rename files inside a GRF file
    checksum   Calculate checksums for a GRF file's contents
    verify     Verify the contents of a GRF file
+   encrypt    Encrypt a GRF file (GRF Editor compatible)
+   decrypt    Decrypt a GRF file (GRF Editor compatible)
    optimize   Optimize a GRF file
    recompress Recompress a GRF file
    filebase   Build a filebase
@@ -79,6 +82,7 @@ Output files can contain glob patterns. Folders are extracted recursively.`)
 	extractRaw := extract.Bool("raw", false, "Extract raw file streams")
 	extractIgnore := extract.Bool("ignore", false, "Ignore errors on individual file extractions")
 	extractCP1252 := extract.Bool("cp1252", false, "Use mangled filenames instead of Korean")
+	extractKeyFile := extract.String("key", "", "Path to the encryption key file")
 	extractQuiet := extract.Bool("quiet", false, "Don't show progress")
 
 	update := flag.NewFlagSet("update", flag.ExitOnError)
@@ -88,7 +92,13 @@ Input files can contain glob patterns. Folders are added recursively.`)
 	updateCompress := update.Int("compress", 9, "Compression level")
 	updateNopipeline := update.Bool("nopipeline", false, "Does not use a pipeline for inserting files (saves memory)")
 	updateCP1252 := update.Bool("cp1252", false, "Use mangled filenames instead of Korean")
+	updateKeyFile := update.String("key", "", "Path to the encryption key file")
 	updateQuiet := update.Bool("quiet", false, "Don't show progress")
+
+	rename := flag.NewFlagSet("rename", flag.ExitOnError)
+	setSubcommandUsage(rename, `<grf file> <old name> <new name>...
+Old names and new names should be given in pairs.`)
+	renameCP1252 := rename.Bool("cp1252", false, "Use mangled filenames instead of Korean")
 
 	checksum := flag.NewFlagSet("checksum", flag.ExitOnError)
 	setSubcommandUsage(checksum, "<grf file>")
@@ -96,6 +106,7 @@ Input files can contain glob patterns. Folders are added recursively.`)
 	checksumStream := checksum.Bool("stream", false, "Calculate stream hashes instead of content hashes")
 	checksumFix := checksum.Bool("fix", false, "Attempt to fix problems; will rewrite files as far as possible")
 	checksumCP1252 := checksum.Bool("cp1252", false, "Use mangled filenames instead of Korean")
+	checksumKeyFile := checksum.String("key", "", "Path to the encryption key file")
 	checksumQuiet := checksum.Bool("quiet", false, "Don't show progress")
 
 	verify := flag.NewFlagSet("verify", flag.ExitOnError)
@@ -103,13 +114,25 @@ Input files can contain glob patterns. Folders are added recursively.`)
 	verifyChecksum := verify.String("checksum", "", "Checksum file name (default \"<input file>.b3c\" or \"<input file>.b3s\")")
 	verifyStream := verify.Bool("stream", false, "Verify stream hashes instead of content hashes")
 	verifyCP1252 := verify.Bool("cp1252", false, "Use mangled filenames instead of Korean")
+	verifyKeyFile := verify.String("key", "", "Path to the encryption key file")
 	verifyQuiet := verify.Bool("quiet", false, "Don't show progress")
+
+	encrypt := flag.NewFlagSet("encrypt", flag.ExitOnError)
+	setSubcommandUsage(encrypt, "<grf file>")
+	encryptKeyFile := encrypt.String("key", "", "Path to the encryption key file")
+	encryptQuiet := encrypt.Bool("quiet", false, "Don't show progress")
+
+	decrypt := flag.NewFlagSet("decrypt", flag.ExitOnError)
+	setSubcommandUsage(decrypt, "<grf file>")
+	decryptKeyFile := decrypt.String("key", "", "Path to the encryption key file")
+	decryptQuiet := decrypt.Bool("quiet", false, "Don't show progress")
 
 	optimize := flag.NewFlagSet("optimize", flag.ExitOnError)
 	setSubcommandUsage(optimize, "<grf file>")
 	optimizeDedup := optimize.Bool("dedup", false, "Deduplication")
 	optimizeSort := optimize.Bool("sort", false, "Sort file table")
 	optimizeDefrag := optimize.Bool("defrag", false, "Defragmentation")
+	optimizeKeyFile := optimize.String("key", "", "Path to the encryption key file")
 	optimizeQuiet := optimize.Bool("quiet", false, "Don't show progress")
 
 	recompress := flag.NewFlagSet("recompress", flag.ExitOnError)
@@ -117,6 +140,7 @@ Input files can contain glob patterns. Folders are added recursively.`)
 	recompressOutput := recompress.String("output", "", "Output file name (default same as input)")
 	recompressLevel := recompress.Int("level", 15, "Compression level")
 	recompressNopipeline := recompress.Bool("nopipeline", false, "Does not use a pipeline for inserting files (saves memory)")
+	recompressKeyFile := recompress.String("key", "", "Path to the encryption key file")
 	recompressQuiet := recompress.Bool("quiet", false, "Don't show progress")
 
 	filebase := flag.NewFlagSet("filebase", flag.ExitOnError)
@@ -128,6 +152,7 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 	filebaseContent := filebase.String("content", "", "Path to the content folder for updating")
 	filebaseCompress := filebase.Int("compress", 15, "Compression level")
 	filebaseCP1252 := filebase.Bool("cp1252", false, "Use mangled filenames instead of Korean")
+	filebaseKeyFile := filebase.String("key", "", "Path to the encryption key file")
 	filebaseQuiet := filebase.Bool("quiet", false, "Don't show progress")
 
 	symsort := flag.NewFlagSet("symsort", flag.ExitOnError)
@@ -137,10 +162,12 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 	setSubcommandUsage(beamsonly, "<grf files...>")
 	beamsonlyKeep := beamsonly.String("keep", "", "Path to a file containing the list of file names to keep; if not given, uses an internal list")
 	beamsonlyCP1252 := beamsonly.Bool("cp1252", false, "Use mangled filenames instead of Korean")
+	beamsonlyKeyFile := beamsonly.String("key", "", "Path to the encryption key file")
 	beamsonlyOutput := beamsonly.String("output", "beamsonly.grf", "Output GRF file name")
 
 	assemble := flag.NewFlagSet("assemble", flag.ExitOnError)
 	setSubcommandUsage(assemble, "<grf file> <filebase file> <content dir>")
+	assembleKeyFile := assemble.String("key", "", "Path to the encryption key file")
 	assembleQuiet := assemble.Bool("quiet", false, "Don't show progress")
 
 	serve := flag.NewFlagSet("serve", flag.ExitOnError)
@@ -148,6 +175,7 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 	servePort := serve.Int("port", 8080, "Port")
 	serveCompress := serve.Int("compress", 9, "Compression level")
 	serveCP1252 := serve.Bool("cp1252", false, "Use mangled filenames instead of Korean")
+	serveKeyFile := serve.String("key", "", "Path to the encryption key file")
 	serveReadonly := serve.Bool("readonly", false, "Serve the archive read-only")
 
 	if len(os.Args) < 2 {
@@ -190,7 +218,7 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 		if len(args) >= 2 {
 			patters = args[1:]
 		}
-		if !runExtract(args[0], patters, *extractOutput, *extractRaw, *extractIgnore, !*extractCP1252, *extractQuiet) {
+		if !runExtract(args[0], *extractKeyFile, patters, *extractOutput, *extractRaw, *extractIgnore, !*extractCP1252, *extractQuiet) {
 			os.Exit(1)
 		}
 	case "update":
@@ -211,10 +239,48 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 				os.Exit(1)
 			}
 		} else {
-			if !runUpdate(args[0], args[1:], *updateCompress, !*updateNopipeline, !*updateCP1252, *updateQuiet) {
+			if !runUpdate(args[0], *updateKeyFile, args[1:], *updateCompress, !*updateNopipeline, !*updateCP1252, *updateQuiet) {
 				os.Exit(1)
 			}
 		}
+	case "rename":
+		rename.Parse(os.Args[2:])
+		if rename.NArg() < 1 {
+			fmt.Println("Error: missing path to GRF file")
+			rename.Usage()
+			os.Exit(1)
+		}
+		if rename.NArg() < 3 {
+			fmt.Println("Error: missing old-new name pair(s)")
+			rename.Usage()
+			os.Exit(1)
+		}
+		if rename.NArg()%2 != 1 {
+			fmt.Println("Error: old and new names should be given in pairs")
+			rename.Usage()
+			os.Exit(1)
+		}
+		args := rename.Args()
+		ar, err := grf.Open(args[0], false, !*renameCP1252)
+		if err != nil {
+			fmt.Println("Error while opening GRF file:", err)
+			os.Exit(1)
+		}
+		for i := 1; i < len(args); i += 2 {
+			oldName := args[i]
+			newName := args[i+1]
+			if !ar.Rename(oldName, newName) {
+				fmt.Printf("Could not rename file \"%s\" to \"%s\"\n", oldName, newName)
+				ar.Close()
+				os.Exit(1)
+			}
+		}
+		err = ar.Close()
+		if err != nil {
+			fmt.Println("Error while finalizing GRF:", err)
+			os.Exit(1)
+		}
+		fmt.Println("All done.")
 	case "checksum":
 		checksum.Parse(os.Args[2:])
 		if checksum.NArg() < 1 {
@@ -231,7 +297,7 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 			}
 			*checksumOutput = fmt.Sprintf("%s.%s", filepath.Base(checksum.Arg(0)), ext)
 		}
-		if !runChecksum(checksum.Arg(0), *checksumOutput, *checksumStream, *checksumFix, !*checksumCP1252, *checksumQuiet) {
+		if !runChecksum(checksum.Arg(0), *checksumOutput, *checksumKeyFile, *checksumStream, *checksumFix, !*checksumCP1252, *checksumQuiet) {
 			os.Exit(1)
 		}
 	case "verify":
@@ -250,7 +316,37 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 			}
 			*verifyChecksum = fmt.Sprintf("%s.%s", filepath.Base(verify.Arg(0)), ext)
 		}
-		if !runVerify(verify.Arg(0), *verifyChecksum, *verifyStream, !*verifyCP1252, *verifyQuiet) {
+		if !runVerify(verify.Arg(0), *verifyChecksum, *verifyKeyFile, *verifyStream, !*verifyCP1252, *verifyQuiet) {
+			os.Exit(1)
+		}
+	case "encrypt":
+		encrypt.Parse(os.Args[2:])
+		if encrypt.NArg() < 1 {
+			fmt.Println("Error: missing path to GRF file")
+			encrypt.Usage()
+			os.Exit(1)
+		}
+		if *encryptKeyFile == "" {
+			fmt.Println("Error: encryption key file is required")
+			encrypt.Usage()
+			os.Exit(1)
+		}
+		if !runCrypt(encrypt.Arg(0), *encryptKeyFile, true, *encryptQuiet) {
+			os.Exit(1)
+		}
+	case "decrypt":
+		decrypt.Parse(os.Args[2:])
+		if decrypt.NArg() < 1 {
+			fmt.Println("Error: missing path to GRF file")
+			decrypt.Usage()
+			os.Exit(1)
+		}
+		if *decryptKeyFile == "" {
+			fmt.Println("Error: encryption key file is required")
+			decrypt.Usage()
+			os.Exit(1)
+		}
+		if !runCrypt(decrypt.Arg(0), *decryptKeyFile, false, *decryptQuiet) {
 			os.Exit(1)
 		}
 	case "optimize":
@@ -260,7 +356,7 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 			optimize.Usage()
 			os.Exit(1)
 		}
-		if !runOptimize(optimize.Arg(0), *optimizeDedup, *optimizeSort, *optimizeDefrag, *optimizeQuiet) {
+		if !runOptimize(optimize.Arg(0), *optimizeKeyFile, *optimizeDedup, *optimizeSort, *optimizeDefrag, *optimizeQuiet) {
 			os.Exit(1)
 		}
 	case "recompress":
@@ -277,7 +373,7 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 		if recompress.Arg(0) == tmpRecompressOutput {
 			tmpRecompressOutput = fmt.Sprintf("%s_recompress_.grf", filepath.Base(strings.TrimSuffix(recompress.Arg(0), path.Ext(recompress.Arg(0)))))
 		}
-		if !runRecompress(recompress.Arg(0), tmpRecompressOutput, *recompressLevel, !*recompressNopipeline, *recompressQuiet) {
+		if !runRecompress(recompress.Arg(0), tmpRecompressOutput, *recompressKeyFile, *recompressLevel, !*recompressNopipeline, *recompressQuiet) {
 			os.Exit(1)
 		}
 		if tmpRecompressOutput != *recompressOutput {
@@ -291,7 +387,7 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 			os.Exit(1)
 		}
 		args := filebase.Args()
-		if !runFilebase(args[0], args[1:], *filebaseGRF, *filebaseGRFName, *filebaseWhiteout, *filebaseContent, *filebaseCompress, !*filebaseCP1252, *filebaseQuiet) {
+		if !runFilebase(args[0], args[1:], *filebaseGRF, *filebaseGRFName, *filebaseWhiteout, *filebaseContent, *filebaseKeyFile, *filebaseCompress, !*filebaseCP1252, *filebaseQuiet) {
 			os.Exit(1)
 		}
 	case "symsort":
@@ -343,7 +439,7 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 		} else {
 			*beamsonlyCP1252 = false
 		}
-		if !runBeamsonly(beamsonly.Args(), *beamsonlyOutput) {
+		if !runBeamsonly(beamsonly.Args(), *beamsonlyOutput, *beamsonlyKeyFile) {
 			os.Exit(1)
 		}
 	case "assemble":
@@ -364,13 +460,13 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 			os.Exit(1)
 		}
 		args := assemble.Args()
-		if !runAssemble(args[0], args[1], args[2], *assembleQuiet) {
+		if !runAssemble(args[0], args[1], args[2], *assembleKeyFile, *assembleQuiet) {
 			os.Exit(1)
 		}
 	case "serve":
 		serve.Parse(os.Args[2:])
 		args := serve.Args()
-		if !runServe(args[0], *servePort, *serveCompress, !*serveCP1252, *serveReadonly) {
+		if !runServe(args[0], *serveKeyFile, *servePort, *serveCompress, !*serveCP1252, *serveReadonly) {
 			os.Exit(1)
 		}
 	case "-h", "-help", "--help", "help":

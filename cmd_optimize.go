@@ -31,13 +31,18 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
-func runOptimize(grfFilePath string, dedup, sort, defrag, quiet bool) bool {
+func runOptimize(grfFilePath, keyFilePath string, dedup, sort, defrag, quiet bool) bool {
 	ar, err := grf.Open(grfFilePath, false, true)
 	if err != nil {
 		fmt.Println("Error while opening GRF file:", err)
 		return false
 	}
 	defer ar.Close()
+
+	if !loadSetEncryptionKeyWithFile(keyFilePath, false, ar) {
+		return false
+	}
+
 	if !dedup && !sort && !defrag {
 		fmt.Println("Nothing to do.")
 		return true

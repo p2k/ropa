@@ -79,7 +79,7 @@ func (a *Archive) Dedup(ctx context.Context, progress chan<- int64) (bool, error
 			h.Linkname = ""
 		}
 
-		err := h.seekAndHashIfNeeded(a.rfile, hasher, streamHasher)
+		err := h.seekAndHashIfNeeded(a.rfile, hasher, streamHasher, a.grfEditorKey)
 		if err != nil {
 			return false, err
 		}
@@ -164,7 +164,7 @@ func (a *Archive) padChunks(length int64, buffer []uint8, bufferLength int64) er
 		}
 	}
 
-	_, err := a.wfile.Seek(int64(a.insertOffset)+46, io.SeekStart)
+	_, err := a.wfile.Seek(int64(a.insertOffset)+LogicalStartOffset, io.SeekStart)
 	if err != nil {
 		return err
 	}
@@ -296,7 +296,7 @@ func (a *Archive) Defragment(ctx context.Context, progress chan<- int64) error {
 		// Assumes there is enough space at the destination (incl. new alignment)
 		h := currentSequence[hsi]
 		ho := h.Offset
-		err := a.copyChunks(int64(dst)+46, int64(ho)+46, int64(h.CompressedSize), buffer, bs)
+		err := a.copyChunks(int64(dst)+LogicalStartOffset, int64(ho)+LogicalStartOffset, int64(h.CompressedSize), buffer, bs)
 		if err != nil {
 			return err
 		}

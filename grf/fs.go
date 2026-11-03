@@ -132,7 +132,7 @@ func (f *ArchivedFile) doReset() error {
 	defer f.a.m.RUnlock()
 
 	f.rp = 0
-	f.a.rfile.Seek(int64(f.h.Offset)+46, io.SeekStart)
+	f.a.rfile.Seek(int64(f.h.Offset)+LogicalStartOffset, io.SeekStart)
 	var lr io.Reader
 	if f.h.Flags&(MixcryptFlag|DESFlag) != 0 && !f.raw {
 		lr = io.LimitReader(f.a.rfile, int64(f.h.AlignedLength))
@@ -152,7 +152,7 @@ func (f *ArchivedFile) doReset() error {
 		}
 		if !f.raw {
 			var err error
-			f.zr, err = newLZLIBReader(lr, f.h.Size)
+			f.zr, err = newDecodingReader(lr, f.h, f.a.grfEditorKey)
 			if err != nil {
 				return err
 			}
@@ -203,7 +203,7 @@ func (f *ArchivedFile) Stat() (fs.FileInfo, error) {
 
 func (f *ArchivedFile) switchContextsIfNeeded() error {
 	if f.a.lf != f {
-		_, err := f.a.rfile.Seek(int64(f.h.Offset+f.h.CompressedSize)-f.lr.N+46, io.SeekStart)
+		_, err := f.a.rfile.Seek(int64(f.h.Offset+f.h.CompressedSize)-f.lr.N+LogicalStartOffset, io.SeekStart)
 		if err != nil {
 			return err
 		}
@@ -546,7 +546,8 @@ func (a *Archive) Open(name string) (fs.File, error) {
 	return a.doOpen(name, false)
 }
 
-// OpenRaw opens the named file inside the GRF without decompressing.
+// OpenRaw opens the named file inside the GRF without decompressing or
+// decrypting.
 //
 // Opening more than one file can be detrimental to the overall speed since a
 // seek has to be performed for each context switch. This will not update the

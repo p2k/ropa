@@ -42,6 +42,9 @@ func compress(input []byte, iterations int, format C.ZopfliFormat, output []byte
 
 	inputSize := C.size_t(len(input))
 	if inputSize == 0 {
+		if format == C.ZOPFLI_FORMAT_GZIP {
+			return []byte(emptyGzip)
+		}
 		return []byte(emptyZlib)
 	}
 	inputPtr := (*C.uchar)(unsafe.Pointer(&input[0]))

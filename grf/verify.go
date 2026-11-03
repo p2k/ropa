@@ -30,6 +30,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ulikunitz/xz/lzma"
 	"lukechampine.com/blake3"
 )
 
@@ -52,14 +53,63 @@ func (e *ArchiveIntegrityError) Error() string {
 	return fmt.Sprintf("Found %d files with errors: %s", len(e.FileErrors), strings.Join(keys, ", "))
 }
 
-func (h *FileHeader) seekAndHash(file io.ReadSeekCloser, hasher, streamHasher hash.Hash) error {
+type testingTeeReaderWriter struct {
+	r io.Reader
+	w io.Writer
+	n int64
+	t [6]byte
+}
+
+func (t *testingTeeReaderWriter) Read(p []byte) (n int, err error) {
+	n, err = t.r.Read(p)
+	if n > 0 {
+		if t.n < 6 {
+			copy(t.t[t.n:], p)
+		}
+		if n, err := t.w.Write(p[:n]); err != nil {
+			return n, err
+		}
+		t.n += int64(n)
+	}
+	return
+}
+
+func (t *testingTeeReaderWriter) Write(p []byte) (n int, err error) {
+	if len(p) > 0 {
+		if t.n < 6 {
+			copy(t.t[t.n:], p)
+		}
+		n, err = t.w.Write(p)
+		t.n += int64(n)
+	}
+	return
+}
+
+func (t *testingTeeReaderWriter) IsMaybeEncrypted() bool {
+	if t.n < 2 {
+		return false
+	}
+
+	// First test if LZMA is indicated
+	if t.t[0] == 0 {
+		// Now properly test for LZMA
+		if t.n >= lzma.HeaderLen-7 && isLZMAHeader(t.t[1:]) {
+			return false
+		}
+	}
+
+	// Test if there's a zlib header
+	return !isZLIBHeader(t.t[:])
+}
+
+func (h *FileHeader) seekAndHash(file io.ReadSeekCloser, hasher, streamHasher hash.Hash, grfEditorKey []byte) error {
 	if hasher == nil && streamHasher == nil {
 		return nil
 	}
 	if h.Flags&FileFlag == 0 && h.CompressedSize != h.Size {
 		return &ArchiveError{"uncompressed size mismatch"}
 	}
-	_, err := file.Seek(int64(h.Offset)+46, io.SeekStart)
+	_, err := file.Seek(int64(h.Offset)+LogicalStartOffset, io.SeekStart)
 	if err != nil {
 		return err
 	}
@@ -70,7 +120,8 @@ func (h *FileHeader) seekAndHash(file io.ReadSeekCloser, hasher, streamHasher ha
 		lr = io.LimitReader(file, int64(h.CompressedSize))
 	}
 	if hasher == nil {
-		_, err = io.Copy(streamHasher, lr)
+		ttr := &testingTeeReaderWriter{w: streamHasher}
+		_, err = io.Copy(ttr, lr)
 		if err != nil {
 			h.Hash.SetZero()
 			if h.Flags&FileFlag == 0 {
@@ -80,7 +131,11 @@ func (h *FileHeader) seekAndHash(file io.ReadSeekCloser, hasher, streamHasher ha
 			h.StreamHash.SetWithHasher(streamHasher)
 			if h.Flags&FileFlag == 0 {
 				h.Hash.SetWithHasher(streamHasher)
+				h.GRFEditorEncrypted = false
+			} else {
+				h.GRFEditorEncrypted = ttr.IsMaybeEncrypted()
 			}
+			h.GRFEditorEncryptionChecked = true
 		}
 		streamHasher.Reset()
 		return err
@@ -91,7 +146,7 @@ func (h *FileHeader) seekAndHash(file io.ReadSeekCloser, hasher, streamHasher ha
 		if streamHasher != nil {
 			lr = io.TeeReader(lr, streamHasher)
 		}
-		zr, err = newLZLIBReader(lr, h.Size)
+		zr, err = newDecodingReader(lr, h, grfEditorKey)
 		if err != nil {
 			if streamHasher != nil {
 				streamHasher.Reset()
@@ -116,6 +171,8 @@ func (h *FileHeader) seekAndHash(file io.ReadSeekCloser, hasher, streamHasher ha
 			}
 		} else {
 			h.StreamHash = h.Hash
+			h.GRFEditorEncrypted = false
+			h.GRFEditorEncryptionChecked = true
 		}
 	}
 	hasher.Reset()
@@ -125,15 +182,15 @@ func (h *FileHeader) seekAndHash(file io.ReadSeekCloser, hasher, streamHasher ha
 	return err
 }
 
-func (h *FileHeader) seekAndHashIfNeeded(file io.ReadSeekCloser, hasher, streamHasher hash.Hash) error {
+func (h *FileHeader) seekAndHashIfNeeded(file io.ReadSeekCloser, hasher, streamHasher hash.Hash, grfEditorKey []byte) error {
 	if h.Hash.IsZero() {
 		if h.StreamHash.IsZero() {
-			return h.seekAndHash(file, hasher, streamHasher)
+			return h.seekAndHash(file, hasher, streamHasher, grfEditorKey)
 		} else {
-			return h.seekAndHash(file, hasher, nil)
+			return h.seekAndHash(file, hasher, nil, grfEditorKey)
 		}
 	} else if h.StreamHash.IsZero() {
-		return h.seekAndHash(file, nil, streamHasher)
+		return h.seekAndHash(file, nil, streamHasher, grfEditorKey)
 	}
 	return nil
 }
@@ -159,7 +216,7 @@ func (a *Archive) Hash(name string) (FileHeaderHash, error) {
 
 	hasher := blake3.New(32, nil)
 	streamHasher := blake3.New(32, nil)
-	err := h.seekAndHash(a.rfile, hasher, streamHasher)
+	err := h.seekAndHash(a.rfile, hasher, streamHasher, a.grfEditorKey)
 	if err != nil {
 		return FileHeaderHash{}, err
 	}
@@ -189,7 +246,7 @@ func (a *Archive) StreamHash(name string) (FileHeaderHash, error) {
 
 	hasher := blake3.New(32, nil)
 	streamHasher := blake3.New(32, nil)
-	err := h.seekAndHash(a.rfile, hasher, streamHasher)
+	err := h.seekAndHash(a.rfile, hasher, streamHasher, a.grfEditorKey)
 	if err != nil {
 		return FileHeaderHash{}, err
 	}
@@ -260,7 +317,7 @@ func (a *Archive) HashAll(streamHash bool, ctx context.Context, progress chan<- 
 			h.Linkname = ""
 		}
 
-		err := h.seekAndHashIfNeeded(a.rfile, hasher, streamHasher)
+		err := h.seekAndHashIfNeeded(a.rfile, hasher, streamHasher, a.grfEditorKey)
 		if err != nil {
 			fileErrors[h.Name] = err
 		} else {
@@ -345,7 +402,7 @@ func (a *Archive) VerifyAll(streamHash bool, hashMap map[string]FileHeaderHash, 
 
 			x := hashMap[h.Name]
 			if !x.IsZero() {
-				err := h.seekAndHashIfNeeded(a.rfile, hasher, streamHasher)
+				err := h.seekAndHashIfNeeded(a.rfile, hasher, streamHasher, a.grfEditorKey)
 				if err != nil {
 					fileErrors[h.Name] = err
 				}

@@ -286,7 +286,7 @@ func (b *filebaseBuilder) writeHashAndSize(h grf.FileHeaderHash, s int64) error 
 	if err != nil {
 		return err
 	}
-	_, err = b.b.Write([]byte(fmt.Sprintf("%s-%08x", h.Hex(), s)))
+	_, err = fmt.Fprintf(b.b, "%s-%08x", h.Hex(), s)
 	if err != nil {
 		return err
 	}
@@ -421,11 +421,11 @@ func (m *integrityMap) add(streamHasher hash.Hash, contentHash grf.FileHeaderHas
 	streamHash.SetWithHasher(streamHasher)
 	if _, ok := m.s2c[streamHash]; !ok {
 		m.s2c[streamHash] = contentHash
-		m.b.Write([]byte(fmt.Sprintf("  %s: %s\n", streamHash.Hex(), contentHash.Hex())))
+		fmt.Fprintf(m.b, "  %s: %s\n", streamHash.Hex(), contentHash.Hex())
 	}
 }
 
-func runFilebase(filebaseFilePath string, inputFilePathsPatterns []string, grfFilePath, grfNameOverride, whiteoutFilePath, contentFolderPath string, compress int, koreanFilenames, quiet bool) bool {
+func runFilebase(filebaseFilePath string, inputFilePathsPatterns []string, grfFilePath, grfNameOverride, whiteoutFilePath, contentFolderPath, keyFilePath string, compress int, koreanFilenames, quiet bool) bool {
 	hasher := blake3.New(32, nil)
 
 	imap := newIntegrityMap()
@@ -777,6 +777,9 @@ func runFilebase(filebaseFilePath string, inputFilePathsPatterns []string, grfFi
 				return false
 			}
 			defer ar.Close()
+			if !loadSetEncryptionKeyWithFile(keyFilePath, false, ar) {
+				return false
+			}
 			for _, name := range ar.AllFileNames() {
 				h := ar.Head(name)
 				cmppath := strings.ToLower(name)

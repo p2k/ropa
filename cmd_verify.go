@@ -34,7 +34,7 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
-func runVerify(grfFilePath, checksumFilePath string, streamHash, koreanFilenames, quiet bool) bool {
+func runVerify(grfFilePath, checksumFilePath, keyFilePath string, streamHash, koreanFilenames, quiet bool) bool {
 	start := time.Now()
 
 	ar, err := grf.Open(grfFilePath, true, koreanFilenames)
@@ -43,6 +43,10 @@ func runVerify(grfFilePath, checksumFilePath string, streamHash, koreanFilenames
 		return false
 	}
 	defer ar.Close()
+
+	if !loadSetEncryptionKeyWithFile(keyFilePath, false, ar) {
+		return false
+	}
 
 	var bar *progressbar.ProgressBar
 	if !quiet {

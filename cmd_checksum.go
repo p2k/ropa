@@ -33,13 +33,18 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
-func runChecksum(grfFilePath, checksumFilePath string, streamHash, tryFix, koreanFilenames, quiet bool) bool {
+func runChecksum(grfFilePath, checksumFilePath, keyFilePath string, streamHash, tryFix, koreanFilenames, quiet bool) bool {
 	ar, err := grf.Open(grfFilePath, !tryFix, koreanFilenames)
 	if err != nil {
 		fmt.Println("Error while opening GRF file:", err)
 		return false
 	}
 	defer ar.Close()
+
+	if !loadSetEncryptionKeyWithFile(keyFilePath, false, ar) {
+		return false
+	}
+
 	checksumFile, err := os.Create(checksumFilePath)
 	if err != nil {
 		fmt.Println("Error while creating checksum file:", err)

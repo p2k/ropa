@@ -22,8 +22,17 @@
 package grf
 
 import (
+	"bytes"
+	"encoding/binary"
+	"hash"
+	"hash/crc32"
 	"io"
+	"io/fs"
+	"math/big"
+	"os"
 	"sync"
+
+	"lukechampine.com/blake3"
 )
 
 var grfCryptFeistelBoxOnce sync.Once
@@ -90,8 +99,8 @@ var grfCryptFeistelBox [8][64]uint32
 
 func grfCryptInitFeistelBox() {
 	for s := range grfCryptSBoxes {
-		for i := 0; i < 4; i++ {
-			for j := 0; j < 16; j++ {
+		for i := range 4 {
+			for j := range 16 {
 				f := uint64(grfCryptSBoxes[s][i][j]) << (4 * (7 - uint(s)))
 				var g uint64
 				for position, n := range grfCryptPermutationFunction {
@@ -363,4 +372,298 @@ func (r *grfCryptReader) Read(dst []byte) (n int, err error) {
 	}
 
 	return
+}
+
+type grfEditorCipher struct {
+	r io.Reader
+	w io.Writer
+	b bytes.Buffer
+
+	s    [256]uint32
+	i, j uint8
+}
+
+func newGRFEditorCipher(r io.Reader, w io.Writer, key []byte, uncompressedSize uint32) *grfEditorCipher {
+	if len(key) != 256 {
+		return nil
+	}
+	c := &grfEditorCipher{r: r, w: w, i: uint8(uncompressedSize & 0xff), j: 0}
+	for i, v := range key {
+		c.s[i] = uint32(v)
+	}
+	return c
+}
+
+func (c *grfEditorCipher) encipherBlock(b []byte) {
+	i, j := c.i, c.j
+	for k, v := range b {
+		i += 1
+		x := c.s[i]
+		j += uint8(x)
+		y := c.s[j]
+		c.s[i], c.s[j] = y, x
+		b[k] = v ^ uint8(c.s[uint8(x+y)])
+	}
+	c.i, c.j = i, j
+}
+
+func (c *grfEditorCipher) encipherInFile(f io.ReadWriteSeeker, h hash.Hash, offset, length int64) error {
+	if length == 0 {
+		return nil
+	}
+
+	var bufferSize int64 = 32 * 1024
+	if length < bufferSize {
+		bufferSize = length
+	}
+	buf := make([]byte, bufferSize)
+
+	for length > 0 {
+		if length < bufferSize {
+			buf = buf[:length]
+			bufferSize = length
+		}
+		_, err := f.Seek(offset, io.SeekStart)
+		if err != nil {
+			return err
+		}
+		n, err := f.Read(buf)
+		if err != nil {
+			return err
+		}
+
+		c.encipherBlock(buf[:n])
+
+		_, err = f.Seek(offset, io.SeekStart)
+		if err != nil {
+			return err
+		}
+		_, err = f.Write(buf[:n])
+		if err != nil {
+			return err
+		}
+		h.Write(buf[:n])
+		offset += int64(n)
+		length -= int64(n)
+	}
+
+	return nil
+}
+
+func (c *grfEditorCipher) Read(dst []byte) (n int, err error) {
+	n, err = c.r.Read(dst)
+	if n == 0 {
+		return 0, err
+	}
+	c.encipherBlock(dst)
+	return
+}
+
+func (c *grfEditorCipher) Write(dst []byte) (n int, err error) {
+	n, err = c.b.Write(dst)
+	if err != nil || n == 0 {
+		return
+	}
+	buf := c.b.Bytes()
+	c.encipherBlock(buf)
+	return c.w.Write(buf)
+}
+
+func (c *grfEditorCipher) Close() error {
+	if closer, ok := c.r.(io.Closer); ok {
+		return closer.Close()
+	}
+	if closer, ok := c.w.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
+// SetGRFEditorEncryptionKey will enable (or disable) GRF Editor style RC4
+// encryption/decryption for use with an approprietely patched cps.dll.
+//
+// If addMissingInfo is true, a special file `__encryption.info` will be
+// added when needed which contains a CRC32 of the key. If the info file is
+// already present, it will be checked against the key and an error will be
+// returned if they don't match. Delete the info file prior to calling this
+// method to disable the check or replace it.
+//
+// The key must be exactly 256 bytes long and contain a permutation of the
+// values 0 through 255 (inclusive). If it is nil, encryption will be disabled.
+// Note that a successful call to this function will toggle the
+// GRFEditorEncryptionEnabled flag as a side effect.
+func (a *Archive) SetGRFEditorEncryptionKey(key []byte, addMissingInfo bool) error {
+	if key != nil && len(key) != 256 {
+		return ErrInvalidKeyLength
+	}
+
+	if key != nil {
+		// Check if the key contains a permutation of 0..255
+		seen := big.NewInt(0)
+		for _, b := range key {
+			if seen.Bit(int(b)) == 1 {
+				return ErrInvalidKey
+			}
+			seen = seen.SetBit(seen, int(b), 1)
+		}
+
+		// Check info file
+		crc := crc32.ChecksumIEEE(key)
+		actualCrc, err := a.ReadFile(EncryptionInfoFileName)
+		if err != nil && os.IsNotExist(err) {
+			if !addMissingInfo {
+				return ErrInvalidKey // Info file missing
+			}
+		} else if err != nil || len(actualCrc) != 4 || binary.LittleEndian.Uint32(actualCrc) != crc {
+			return ErrInvalidKey
+		} else {
+			addMissingInfo = false // All good, no need to add
+		}
+
+		if addMissingInfo {
+			var crcBytes [4]byte
+			binary.LittleEndian.PutUint32(crcBytes[:], crc)
+			_, err = a.PutBytes(EncryptionInfoFileName, crcBytes[:], 1)
+			if err != nil {
+				return err
+			}
+		}
+
+		a.m.Lock()
+		defer a.m.Unlock()
+
+		if a.grfEditorKey == nil {
+			a.grfEditorKey = make([]byte, 256)
+		}
+		copy(a.grfEditorKey, key[:])
+
+		a.GRFEditorEncryptionEnabled = true
+	} else {
+		a.m.Lock()
+		defer a.m.Unlock()
+
+		if a.entriesByName != nil {
+			h := a.entriesByName[EncryptionInfoFileName]
+			if h != nil && !h.Deleted {
+				return ErrInvalidKey // Info file present but attempting to use a nil key
+			}
+		}
+		a.grfEditorKey = nil
+		a.GRFEditorEncryptionEnabled = false
+	}
+
+	return nil
+}
+
+// GRFEditorEncryptionKey returns a copy of the currently set GRF Editor
+// encryption key.
+func (a *Archive) GRFEditorEncryptionKey() []byte {
+	a.m.RLock()
+	defer a.m.RUnlock()
+
+	if a.grfEditorKey == nil {
+		return nil
+	}
+
+	key := make([]byte, 256)
+	copy(key, a.grfEditorKey)
+	return key
+}
+
+func (a *Archive) doGRFEditorEncryptionCheck(h *FileHeader) error {
+	_, err := a.rfile.Seek(int64(h.Offset)+LogicalStartOffset, io.SeekStart)
+	if err != nil {
+		return err
+	}
+
+	lr := io.LimitReader(a.rfile, int64(h.CompressedSize))
+	ttr := &testingTeeReaderWriter{}
+	n, err := lr.Read(ttr.t[:])
+	if err != nil && err != io.EOF {
+		return err
+	}
+	ttr.n = int64(n)
+	h.GRFEditorEncrypted = ttr.IsMaybeEncrypted()
+	h.GRFEditorEncryptionChecked = true
+
+	return nil
+}
+
+// CheckGRFEditorEncryption checks whether the file described by the given name
+// appears to be encrypted with the currently set GRF Editor encryption key.
+//
+// This will update the FileHeader's variables related to encryption state.
+func (a *Archive) CheckGRFEditorEncryption(name string) error {
+	a.m.Lock()
+	defer a.m.Unlock()
+
+	h := a.entriesByName[name]
+	if h == nil || h.Deleted {
+		return fs.ErrNotExist
+	}
+
+	if h.Flags&FileFlag == 0 || h.CompressedSize < 2 {
+		h.GRFEditorEncrypted = false
+		h.GRFEditorEncryptionChecked = true
+		return nil
+	}
+
+	if a.grfEditorKey == nil {
+		return ErrInvalidKey
+	}
+
+	if a.lf != nil {
+		a.lf = nil
+	}
+
+	return a.doGRFEditorEncryptionCheck(h)
+}
+
+// EnsureEncryptionStatus encrypts or decrypts the file in-place with the given
+// name based on the setting of GRFEditorEncryptionEnabled.
+//
+// It fails with ErrInvalidKey if no key is set. The file is checked if it was
+// not already checked for encryption. Will also update the stream hash.
+func (a *Archive) EnsureEncryptionStatus(name string) error {
+	if a.wfile == nil {
+		return ErrReadOnly
+	}
+
+	a.m.Lock()
+	defer a.m.Unlock()
+
+	h := a.entriesByName[name]
+	if h == nil || h.Deleted {
+		return fs.ErrNotExist
+	}
+
+	if a.grfEditorKey == nil {
+		return ErrInvalidKey
+	}
+
+	if a.lf != nil {
+		a.lf = nil
+	}
+
+	if !h.GRFEditorEncryptionChecked {
+		if h.Flags&FileFlag == 0 || h.CompressedSize < 2 {
+			h.GRFEditorEncrypted = false
+			h.GRFEditorEncryptionChecked = true
+		} else if err := a.doGRFEditorEncryptionCheck(h); err != nil {
+			return err
+		}
+	}
+
+	if a.GRFEditorEncryptionEnabled != h.GRFEditorEncrypted {
+		streamHasher := blake3.New(32, nil)
+		c := newGRFEditorCipher(nil, nil, a.grfEditorKey, h.Size)
+		err := c.encipherInFile(a.wfile, streamHasher, int64(h.Offset)+LogicalStartOffset, int64(h.CompressedSize))
+		if err != nil {
+			return err
+		}
+		h.GRFEditorEncrypted = a.GRFEditorEncryptionEnabled
+		h.StreamHash.SetWithHasher(streamHasher)
+	}
+
+	return nil
 }
