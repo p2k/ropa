@@ -15,7 +15,12 @@ go build -o ropa .
 
 - cgo must be enabled, because Zopfli is C. The module name is `ropa`, so build from the repository root.
 - In a sandbox where the Go build cache isn't writable, set `GOCACHE=$TMPDIR/gocache`.
+- `ropa version` prints the version. Release builds set it with `-ldflags "-X main.version=X.Y.Z"`; local builds print `dev` and the git revision.
 - There are no tests. `gofmt -l .`, `go vet ./...` and `staticcheck ./...` should be clean. Verify behaviour by running the binary on a throwaway GRF (see "Smoke test" below).
+
+## Releasing
+
+Releases are created by `.github/workflows/release.yml` when a `vX.Y.Z` tag is pushed. Before tagging, add a `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md` (moving the `Unreleased` entries) and update the links at the bottom; the workflow fails without that section and uses it as the release notes. Pushing tags publishes a release, so only do it when the user asks.
 
 ## Invocation rules
 

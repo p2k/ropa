@@ -19,8 +19,18 @@ Features
 - **WebDAV server**: mount a GRF as a network drive and edit it with any file manager.
 - **Filebase / content store**: describe a whole client (loose files plus GRF contents) as a compact YAML manifest backed by deduplicated, pre-compressed blobs, then rebuild a GRF from it.
 
-Building
---------
+Installation
+------------
+
+Prebuilt binaries for Linux, Windows and macOS (amd64 and arm64; Windows amd64 only) are attached to each [release](https://github.com/p2k/ropa/releases). Unpack the archive and put `ropa` somewhere on your `PATH`. The `SHA256SUMS` file lists the checksums of all archives. Run `ropa version` to see which version you have.
+
+The macOS binaries are not signed. If macOS refuses to run `ropa`, remove the quarantine flag once:
+
+```bash
+xattr -d com.apple.quarantine ropa
+```
+
+### Building from source
 
 You need Go 1.23 or newer and a C compiler, because Zopfli is built with cgo.
 
@@ -32,7 +42,7 @@ git clone https://github.com/p2k/ropa.git
 cd ropa && go build
 ```
 
-This produces a single `ropa` binary. The module path is `ropa`, so build from a clone rather than with `go install <url>`.
+This produces a single `ropa` binary. The module path is `ropa`, so build from a clone rather than with `go install <url>`. Builds from source report their version as `dev` followed by the git revision.
 
 Quick start
 -----------
@@ -148,6 +158,18 @@ Korean file names
 -----------------
 
 GRF files store names in EUC-KR. Many older tools decode them as Windows-1252, which turns them into the familiar mojibake such as `À¯ÀúÀÎÅÍÆäÀÌ½º`. ROPA shows and expects the real Korean names by default. Pass `-cp1252` to list, extract or add files using the mangled names instead, for example to stay compatible with existing folders or patch lists.
+
+Releasing
+---------
+
+1. Move the entries under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) to a new `## [X.Y.Z] - YYYY-MM-DD` section, and update the comparison links at the bottom.
+2. Commit, then tag and push the release:
+
+```bash
+git tag vX.Y.Z && git push origin vX.Y.Z
+```
+
+The [release workflow](.github/workflows/release.yml) checks the code, builds all binaries and publishes a GitHub release with the changelog section as release notes. It stops if CHANGELOG.md has no section for the version.
 
 License
 -------

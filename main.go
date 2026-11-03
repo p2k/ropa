@@ -28,8 +28,42 @@ import (
 	"path"
 	"path/filepath"
 	"ropa/grf"
+	"runtime/debug"
 	"strings"
 )
+
+// version is set for release builds with -ldflags "-X main.version=x.y.z".
+var version = "dev"
+
+// versionString returns the version; development builds include the VCS
+// revision if available.
+func versionString() string {
+	if version != "dev" {
+		return version
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return version
+	}
+	var revision, modified string
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			revision = s.Value
+		case "vcs.modified":
+			if s.Value == "true" {
+				modified = ", modified"
+			}
+		}
+	}
+	if len(revision) > 7 {
+		revision = revision[:7]
+	}
+	if revision == "" {
+		return version
+	}
+	return fmt.Sprintf("%s (%s%s)", version, revision, modified)
+}
 
 // keep lists the sound files that beamsonly leaves untouched by default; these
 // are the item drop sounds that accompany the colored drop beams.
@@ -61,6 +95,7 @@ func printUsage() {
    symsort      Sort a symlink file
    beamsonly    Build the beams-only GRF
    serve        Serve a GRF through WebDAV
+   version      Print the version
 `, os.Args[0])
 }
 
@@ -478,6 +513,8 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 		if !runServe(args[0], *serveKeyFile, *servePort, *serveCompress, !*serveCP1252, *serveReadonly) {
 			os.Exit(1)
 		}
+	case "-v", "-version", "--version", "version":
+		fmt.Println("ropa", versionString())
 	case "-h", "-help", "--help", "help":
 		printUsage()
 	default:
