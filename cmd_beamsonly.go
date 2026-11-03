@@ -28,6 +28,9 @@ import (
 	"strings"
 )
 
+// silenceWavZBase64 is a short silent WAV file as a zlib stream; it's stored
+// once and every other WAV file is linked to it. silenceWavSize is its
+// uncompressed size.
 const silenceWavZBase64 = "eNoL8nRzK2JlYAh3DHNNyy1REGBgYGAEQqUwBgaXNQwMTAwCDD6ewSFSQHFPPzd/z2C3ED4g2yexLM3UQs/IUs/QwIAhJbEkUYeVgQgwCkbBKBgFowAA9mEOpA=="
 const silenceWavSize = 1402
 

@@ -31,6 +31,8 @@ import (
 	"strings"
 )
 
+// keep lists the sound files that beamsonly leaves untouched by default; these
+// are the item drop sounds that accompany the colored drop beams.
 var keep = map[string]bool{
 	"data/wav/effect/drop_blue.wav":   true,
 	"data/wav/effect/drop_green.wav":  true,

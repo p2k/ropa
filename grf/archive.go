@@ -634,9 +634,9 @@ func (a *Archive) deleteFolderEntry(name string) {
 // Open opens an existing GRF file at the given path.
 //
 // The file's internal headers are read and it's put in a state, where new
-// data can be written or existing data can be read. The last parameter controls
-// whether you want to use Korean filenames or (mangled) filenames using the
-// Windows-1252 codepage.
+// data can be written or existing data can be read. If readonly is true, all
+// modifying methods will fail. The last parameter controls whether you want to
+// use Korean filenames or (mangled) filenames using the Windows-1252 codepage.
 func Open(name string, readonly, koreanFilenames bool) (*Archive, error) {
 	name, err := filepath.Abs(name)
 	if err != nil {
@@ -1173,7 +1173,10 @@ func (a *Archive) finalizePut(name string, uncompressedSize uint32, flags uint8)
 	if a.entriesByName == nil {
 		a.entriesByName = make(map[string]*FileHeader)
 	}
-	// TODO: This can change linked files
+	// TODO: This can change linked files; when replacing a file that other
+	// entries link to, the links keep pointing to the old data while their
+	// Linkname still names the replaced file. After reopening, the links form
+	// their own group since links are derived from shared offsets.
 	header := a.entriesByName[name]
 	if header == nil {
 		header = &FileHeader{
@@ -1465,6 +1468,10 @@ func (a *Archive) doRename(oldname, newname string) bool {
 }
 
 // Rename renames (moves) oldname to newname in the GRF.
+//
+// An existing file at newname is replaced. If oldname is a folder, all files
+// within are moved recursively. Returns false if the archive is read only or
+// oldname does not exist.
 func (a *Archive) Rename(oldname, newname string) bool {
 	if a.wfile == nil {
 		return false
@@ -1484,7 +1491,8 @@ func (a *Archive) Rename(oldname, newname string) bool {
 // Delete removes a file from the GRF.
 //
 // The file is not physically removed, just its file header won't be written on
-// closing.
+// closing. Files linking to it are unaffected since they share the data.
+// Returns false if the archive is read only or the file does not exist.
 func (a *Archive) Delete(name string) bool {
 	if a.wfile == nil {
 		return false

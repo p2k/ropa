@@ -121,7 +121,7 @@ This serves the archive at `http://127.0.0.1:8080/` (local connections only), so
 
 ### Filebase and content store
 
-A *filebase* is a YAML manifest (`ROPAFilebase/v1`) that lists every file of a client with its BLAKE3 hash and size. It has two sections: `root_contents` for loose files and `grf_contents` for the contents of a GRF. Next to it lives a content folder of zlib-compressed blobs named `<hash>-<size in hex>.zl`, plus an `integrity.yml.gz` map. Identical files are stored only once, and only new blobs are written on later runs.
+A *filebase* is a YAML manifest (`ROPAFilebase/v1`, specified in [FILEBASE.md](FILEBASE.md)) that lists every file of a client with its BLAKE3 hash and size. It has two sections: `root_contents` for loose files and `grf_contents` for the contents of a GRF. Next to it lives a content folder of zlib-compressed blobs named `<hash>-<size in hex>.zl`, plus an `integrity.yml.gz` map. Identical files are stored only once, and only new blobs are written on later runs.
 
 ```bash
 ropa filebase -grf data.grf -content store client.filebase.yml.gz BGM System
