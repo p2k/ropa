@@ -21,6 +21,8 @@
 
 // TODO: Align file and file table insertion
 
+// Package grf reads and writes GRF archives as used by the Ragnarok Online
+// client.
 package grf
 
 import (
@@ -284,10 +286,11 @@ type FileHeaderHash [32]byte
 // hash. Returns a zero hash on error.
 func FileHeaderHashFromHex(s string) FileHeaderHash {
 	var h FileHeaderHash
-	if n, err := hex.Decode(h[:], []byte(s)); err != nil && n == 32 {
-		for i := 0; i < n; i++ {
-			h[i] = 0
-		}
+	if len(s) != hex.EncodedLen(len(h)) {
+		return h
+	}
+	if _, err := hex.Decode(h[:], []byte(s)); err != nil {
+		h.SetZero()
 	}
 	return h
 }

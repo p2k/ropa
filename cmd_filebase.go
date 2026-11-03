@@ -375,7 +375,7 @@ func (m *integrityMap) load(integrityFilePath string) error {
 				m.b.WriteByte('\n')
 			}
 		} else if strings.HasPrefix(t, "  ") {
-			spl := strings.SplitN(t[2:len(t)-1], ": ", 2)
+			spl := strings.SplitN(t[2:], ": ", 2)
 			if len(spl) == 2 {
 				h1 := grf.FileHeaderHashFromHex(spl[0])
 				h2 := grf.FileHeaderHashFromHex(spl[1])
@@ -390,7 +390,7 @@ func (m *integrityMap) load(integrityFilePath string) error {
 		}
 	}
 
-	return nil
+	return scanner.Err()
 }
 
 // Note: if the file name ends with .gz, you can only save once since the
@@ -635,6 +635,10 @@ func runFilebase(filebaseFilePath string, inputFilePathsPatterns []string, grfFi
 			inputFilesIndex[cmppath] = len(inputFiles)
 			inputFiles = append(inputFiles, &filebaseEntry{cmppath: cmppath, pathspl: pathspl, isWhiteout: true})
 		}
+		if err := scanner.Err(); err != nil {
+			fmt.Println("Error while reading whiteout file:", err)
+			return false
+		}
 	}
 
 	sort.Slice(inputFiles, func(i, j int) bool { return inputFiles[i].cmppath < inputFiles[j].cmppath })
@@ -696,7 +700,7 @@ func runFilebase(filebaseFilePath string, inputFilePathsPatterns []string, grfFi
 				cmppath := strings.ToLower(sanitizedPath)
 				pathspl := strings.Split(sanitizedPath, "/")
 				basename := pathspl[len(pathspl)-1]
-				if basename != "symlinks" && basename[0] != '.' && !d.IsDir() {
+				if !strings.EqualFold(path, "SYMLINKS") && basename[0] != '.' && !d.IsDir() {
 					fi, err := d.Info()
 					if err != nil {
 						return err
@@ -723,7 +727,7 @@ func runFilebase(filebaseFilePath string, inputFilePathsPatterns []string, grfFi
 				}
 				return false
 			}
-			slf, err := grf.OpenSymlinks(grfFilePath)
+			slf, err := grf.OpenSymlinks(grfRelPath)
 			if err != nil {
 				if bar != nil {
 					bar.Exit()

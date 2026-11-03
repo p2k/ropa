@@ -250,8 +250,8 @@ func runUpdate(grfFilePath, keyFilePath string, inputPatterns []string, compress
 					}
 				}()
 				arp.SetProgressCh(pc)
+				defer close(pc)
 			}
-			defer close(pc)
 
 			for _, e := range inputFiles {
 				if !e.isSymlink {

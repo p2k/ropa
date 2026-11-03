@@ -146,6 +146,10 @@ func runAssemble(grfFilePath, filebasePath, contentDirPath, keyFilePath string, 
 			}
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		fmt.Println("Error while reading filebase:", err)
+		return false
+	}
 
 	var bar *progressbar.ProgressBar
 	if !quiet {
