@@ -1,0 +1,141 @@
+# Builds ROPA for all supported platforms and publishes a GitHub release when a
+# version tag (vX.Y.Z) is pushed. The release notes are taken from the
+# matching section in CHANGELOG.md.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Check changelog entry
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          grep -q "^## \[${version}\]" CHANGELOG.md || {
+            echo "CHANGELOG.md has no section for ${version}"
+            exit 1
+          }
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: check
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64, runner: ubuntu-latest, cc: gcc }
+          - { goos: linux, goarch: arm64, runner: ubuntu-latest, cc: aarch64-linux-gnu-gcc, apt: gcc-aarch64-linux-gnu }
+          - { goos: windows, goarch: amd64, runner: ubuntu-latest, cc: x86_64-w64-mingw32-gcc, apt: gcc-mingw-w64-x86-64 }
+          - { goos: darwin, goarch: arm64, runner: macos-latest, cc: clang }
+          - { goos: darwin, goarch: amd64, runner: macos-latest, cc: clang }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      - name: Install cross compiler
+        if: matrix.apt
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+
+      # Zopfli is built with cgo, so every target needs a C compiler. Linux and
+      # Windows binaries are linked statically to run on any distribution.
+      - name: Build
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CC: ${{ matrix.cc }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          ldflags="-s -w -X main.version=${version}"
+          tags=""
+          if [ "$GOOS" != darwin ]; then
+            ldflags="${ldflags} -extldflags=-static"
+            tags="netgo,osusergo"
+          fi
+          exe=ropa
+          if [ "$GOOS" = windows ]; then
+            exe=ropa.exe
+          fi
+          go build -trimpath -tags "${tags}" -ldflags "${ldflags}" -o "dist/${exe}" .
+
+      - name: Smoke test
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64' || matrix.goos == 'darwin' && matrix.goarch == 'arm64'
+        run: dist/ropa version
+
+      - name: Package
+        run: |
+          name="ropa-${GITHUB_REF_NAME#v}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          cp README.md CHANGELOG.md FILEBASE.md SKILL.md LICENSE dist/
+          mkdir -p out
+          if [ "${{ matrix.goos }}" = windows ]; then
+            (cd dist && zip -9 -r "../out/${name}.zip" .)
+          else
+            tar -czf "out/${name}.tar.gz" -C dist .
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ropa-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          pattern: ropa-*
+          merge-multiple: true
+
+      - name: Checksums
+        run: cd out && sha256sum * > SHA256SUMS
+
+      - name: Release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && /^## \[/ { exit }
+            found && /^\[[^]]+\]: / { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          cat notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/* \
+            --title "ROPA ${GITHUB_REF_NAME#v}" \
+            --notes-file notes.md \
+            --verify-tag
