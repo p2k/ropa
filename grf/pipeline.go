@@ -152,19 +152,24 @@ func NewPipeline(ar *Archive, size int, compress int) *Pipeline {
 	go func() {
 		n := p.size
 		outp := 0
+		broken := false
 		for n > 0 {
 			pw := p.workers[outp]
 			outp = (outp + 1) % p.size
 			if !pw.exit {
 				_, ok := <-pw.done
 				if ok {
+					if broken {
+						// Discard jobs still in flight after the first error
+						continue
+					}
 					if pw.err == nil {
 						if pw.lname != "" {
 							_, pw.err = ar.Link(pw.name, pw.lname)
 						} else {
 							var h *FileHeader
 							h, pw.err = ar.RawPutBytes(pw.name, pw.out, uint32(pw.size), pw.flags)
-							if !pw.inh.IsZero() {
+							if pw.err == nil && !pw.inh.IsZero() {
 								h.Hash = pw.inh
 							}
 							p.processed += pw.size
@@ -172,12 +177,14 @@ func NewPipeline(ar *Archive, size int, compress int) *Pipeline {
 								p.pc <- p.processed
 							}
 						}
-						if pw.err == nil {
-							pw.empty <- true
-						}
 					}
-					if pw.err != nil {
-						p.err = pw.err
+					// Read the error before handing the worker back to the
+					// input side, which will reset it for the next job
+					if err := pw.err; err == nil {
+						pw.empty <- true
+					} else {
+						p.err = err
+						broken = true
 						for _, ww := range p.workers {
 							close(ww.empty)
 						}

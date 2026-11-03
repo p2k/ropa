@@ -188,12 +188,17 @@ func runUpdate(grfFilePath, keyFilePath string, inputPatterns []string, compress
 
 	sort.Slice(inputFiles, func(i, j int) bool { return inputFiles[i].cmppath < inputFiles[j].cmppath })
 
-	// Fix symlink dependencies
+	// Fix symlink dependencies: a link can only be created once its target
+	// is in the GRF, but entries are written in sorted order. If a link comes
+	// before its target, follow chains of links to the real file and swap
+	// roles, so this entry carries the data and the real file becomes a link.
+	// If the target is not an input at all, it has to exist in the GRF already.
 	if nSymlinks > 0 {
 		seenPaths := make(map[string]bool)
 		for i, e := range inputFiles {
 			cmplinkpath := strings.ToLower(e.linkpath)
 			for e.isSymlink && !seenPaths[cmplinkpath] {
+				found := false
 				for _, f := range inputFiles[i+1:] {
 					if f.cmppath == cmplinkpath {
 						if f.isSymlink {
@@ -207,8 +212,12 @@ func runUpdate(grfFilePath, keyFilePath string, inputPatterns []string, compress
 							f.realpath = ""
 							f.isSymlink = true
 						}
+						found = true
 						break
 					}
+				}
+				if !found {
+					break
 				}
 			}
 			seenPaths[e.cmppath] = true
@@ -231,7 +240,7 @@ func runUpdate(grfFilePath, keyFilePath string, inputPatterns []string, compress
 		"for updating.",
 	)
 
-	if nFiles > 0 {
+	if nFiles > 0 || nSymlinks > 0 {
 		if bar != nil {
 			bar.Describe("Writing")
 			bar.ChangeMax64(totalSize)
@@ -318,7 +327,7 @@ func runUpdate(grfFilePath, keyFilePath string, inputPatterns []string, compress
 							bar.Exit()
 							fmt.Println()
 						}
-						fmt.Printf("Error while linking file \"%s\": %s\n", e.realpath, err)
+						fmt.Printf("Error while linking file \"%s\" to \"%s\": %s\n", e.path, e.linkpath, err)
 						return false
 					}
 				}
