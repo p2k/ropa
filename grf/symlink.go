@@ -36,7 +36,7 @@ import (
 	"time"
 )
 
-// SymlinkFile simplifies handling symbolic links outside of GRF files.
+// SymlinksFile simplifies handling symbolic links outside of GRF files.
 //
 // A special file "SYMLINKS" is written while extracting or read while authoring
 // GRFs to handle repeating content.
@@ -137,6 +137,9 @@ func OpenSymlinks(path string) (*SymlinksFile, error) {
 		}
 	}
 	r.Close()
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
 
 	return s, nil
 }
@@ -287,7 +290,7 @@ func (s *SymlinksFile) Write() error {
 	return nil
 }
 
-// Write the symlink file sorted by paths.
+// WriteSorted writes the symlink file sorted by paths.
 //
 // This should be run separately since it costs some time depending on the
 // number of entries and forces a rewrite of the entire file.

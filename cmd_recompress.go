@@ -90,8 +90,8 @@ func runRecompress(inputFilePath, outputFilePath, keyFilePath string, level int,
 				}
 			}()
 			dstp.SetProgressCh(pc)
+			defer close(pc)
 		}
-		defer close(pc)
 
 		for _, name := range srcGrf.AllFileNames() {
 			h := srcGrf.Head(name)

@@ -198,7 +198,7 @@ type grfCryptReader struct {
 
 func newGRFCryptReader(r io.Reader, mix bool, size uint32) io.Reader {
 	grfCryptFeistelBoxOnce.Do(grfCryptInitFeistelBox)
-	var cycle int = 1
+	cycle := 1
 	// Count digits
 	for i := size / 10; i > 0; i /= 10 {
 		cycle++

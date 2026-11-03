@@ -19,6 +19,7 @@
 //  limitations under the Licence.
 //
 
+// Package zopfli wraps the Zopfli compressor to produce zlib and gzip streams.
 package zopfli
 
 /*

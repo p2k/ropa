@@ -59,6 +59,8 @@ type filebaseEntry struct {
 	size       int64
 }
 
+// virtualGRF provides filebaseGRF for an extracted GRF folder and caches the
+// content hashes of all files it has read.
 type virtualGRF struct {
 	basePath string
 	h        hash.Hash
@@ -109,11 +111,17 @@ func (g *virtualGRF) Get(name string, w io.Writer) (int64, error) {
 	return n, nil
 }
 
+// filebaseGRF is the common interface of grf.Archive and virtualGRF used for
+// reading the GRF contents of a filebase.
 type filebaseGRF interface {
 	Hash(name string) (grf.FileHeaderHash, error)
 	Get(name string, w io.Writer) (int64, error)
 }
 
+// writeContentIfNeeded stores d as "<hash>-<size>.zl" in the content folder
+// unless a non-empty file of that name exists. The stored zlib stream is fed to
+// s (if not nil) so the caller gets the stream hash for the integrity map. MP3
+// and GRF files are already compressed and are stored with level 0.
 func (e *filebaseEntry) writeContentIfNeeded(contentFolderPath string, h grf.FileHeaderHash, s hash.Hash, d []byte, compress int) error {
 	contentPath := filepath.Join(contentFolderPath, fmt.Sprintf("%s-%08x.zl", h.Hex(), e.size))
 	fi, err := os.Stat(contentPath)
@@ -166,6 +174,12 @@ func (e *filebaseEntry) writeContentIfNeeded(contentFolderPath string, h grf.Fil
 	return nil
 }
 
+// filebaseBuilder writes a ROPAFilebase/v1 document (see FILEBASE.md).
+//
+// Paths have to be written in sorted order; writePath only emits the
+// components that differ from the previous path, which yields the nested YAML
+// mapping. Path components are JSON-quoted if they match q, i.e. if they would
+// be ambiguous in YAML. wo is the value written for whiteouts.
 type filebaseBuilder struct {
 	b       *bytes.Buffer
 	indent  [][]byte
@@ -319,6 +333,9 @@ func (b *filebaseBuilder) writeGRFName(name string) error {
 	return err
 }
 
+// integrityMap maps the stream hash (BLAKE3 of the stored .zl file) to the
+// content hash of each blob in a content folder (see FILEBASE.md). It allows
+// verifying and finding compressed data without decompressing it.
 type integrityMap struct {
 	b   *bytes.Buffer
 	s2c map[grf.FileHeaderHash]grf.FileHeaderHash
@@ -375,7 +392,7 @@ func (m *integrityMap) load(integrityFilePath string) error {
 				m.b.WriteByte('\n')
 			}
 		} else if strings.HasPrefix(t, "  ") {
-			spl := strings.SplitN(t[2:len(t)-1], ": ", 2)
+			spl := strings.SplitN(t[2:], ": ", 2)
 			if len(spl) == 2 {
 				h1 := grf.FileHeaderHashFromHex(spl[0])
 				h2 := grf.FileHeaderHashFromHex(spl[1])
@@ -390,7 +407,7 @@ func (m *integrityMap) load(integrityFilePath string) error {
 		}
 	}
 
-	return nil
+	return scanner.Err()
 }
 
 // Note: if the file name ends with .gz, you can only save once since the
@@ -635,6 +652,10 @@ func runFilebase(filebaseFilePath string, inputFilePathsPatterns []string, grfFi
 			inputFilesIndex[cmppath] = len(inputFiles)
 			inputFiles = append(inputFiles, &filebaseEntry{cmppath: cmppath, pathspl: pathspl, isWhiteout: true})
 		}
+		if err := scanner.Err(); err != nil {
+			fmt.Println("Error while reading whiteout file:", err)
+			return false
+		}
 	}
 
 	sort.Slice(inputFiles, func(i, j int) bool { return inputFiles[i].cmppath < inputFiles[j].cmppath })
@@ -696,7 +717,7 @@ func runFilebase(filebaseFilePath string, inputFilePathsPatterns []string, grfFi
 				cmppath := strings.ToLower(sanitizedPath)
 				pathspl := strings.Split(sanitizedPath, "/")
 				basename := pathspl[len(pathspl)-1]
-				if basename != "symlinks" && basename[0] != '.' && !d.IsDir() {
+				if !strings.EqualFold(path, "SYMLINKS") && basename[0] != '.' && !d.IsDir() {
 					fi, err := d.Info()
 					if err != nil {
 						return err
@@ -723,7 +744,7 @@ func runFilebase(filebaseFilePath string, inputFilePathsPatterns []string, grfFi
 				}
 				return false
 			}
-			slf, err := grf.OpenSymlinks(grfFilePath)
+			slf, err := grf.OpenSymlinks(grfRelPath)
 			if err != nil {
 				if bar != nil {
 					bar.Exit()
@@ -1026,6 +1047,8 @@ func runFilebase(filebaseFilePath string, inputFilePathsPatterns []string, grfFi
 	return finalMessage == "All done."
 }
 
+// runContentcheck decompresses every blob in the content folder and deletes
+// those whose content hash or size doesn't match the file name.
 func runContentcheck(contentFolderPath string) {
 	hasher := blake3.New(32, nil)
 	err := filepath.WalkDir(contentFolderPath, func(path string, d fs.DirEntry, err error) error {

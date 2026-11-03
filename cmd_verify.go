@@ -84,6 +84,14 @@ func runVerify(grfFilePath, checksumFilePath, keyFilePath string, streamHash, ko
 		}
 	}
 	checksumFile.Close()
+	if err := scanner.Err(); err != nil {
+		if bar != nil {
+			bar.Exit()
+			fmt.Println()
+		}
+		fmt.Println("Error while reading checksum file:", err)
+		return false
+	}
 
 	if bar != nil {
 		bar.Describe("Verifying")

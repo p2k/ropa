@@ -48,6 +48,8 @@ func unquoteIfNeeded(q string) string {
 	return u
 }
 
+// runAssemble creates a GRF from the grf_contents section of a filebase,
+// copying the stored blobs without recompressing them.
 func runAssemble(grfFilePath, filebasePath, contentDirPath, keyFilePath string, quiet bool) bool {
 	fb, err := os.Open(filebasePath)
 	if err != nil {
@@ -127,7 +129,7 @@ func runAssemble(grfFilePath, filebasePath, contentDirPath, keyFilePath string, 
 			sc := strings.IndexRune(t, ':')
 			if sc == len(t)-1 {
 				pathStack = append(pathStack, unquoteIfNeeded(t[indent+2:len(t)-1]))
-			} else if len(t)-sc == 75 {
+			} else if len(t)-sc == 75 { // ": " + 64 hex digits hash + "-" + 8 hex digits size
 				pathStack = append(pathStack, unquoteIfNeeded(t[indent+2:sc]))
 				path := path.Join(pathStack...)
 				filename := t[sc+2:] + ".zl"
@@ -145,6 +147,10 @@ func runAssemble(grfFilePath, filebasePath, contentDirPath, keyFilePath string, 
 				}
 			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Println("Error while reading filebase:", err)
+		return false
 	}
 
 	var bar *progressbar.ProgressBar
@@ -183,10 +189,12 @@ func runAssemble(grfFilePath, filebasePath, contentDirPath, keyFilePath string, 
 		}
 
 		filename := contentFilenames[i]
+		// The first path using a blob stores it, all others link to that path
 		if link, ok := contentLinks[filename]; ok && link != path {
 			ar.Link(path, link)
 		} else {
 			var uncompressedSize uint32
+			// Skip the hash and "-", drop ".zl"
 			fmt.Sscanf(filename[65:len(filename)-3], "%08x", &uncompressedSize)
 			fp := filepath.Join(contentDirPath, filename)
 			f, err := os.Open(fp)

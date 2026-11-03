@@ -61,6 +61,7 @@ func (fi *ArchivedFileInfo) Size() int64 {
 	return 0
 }
 
+// CompressedSize returns the size of the file's raw data within the GRF.
 func (fi *ArchivedFileInfo) CompressedSize() int64 {
 	if fi.h != nil {
 		return int64(fi.h.CompressedSize)
@@ -455,6 +456,10 @@ func (f *ArchivedFile) Readdir(count int) ([]fs.FileInfo, error) {
 	return infos, nil
 }
 
+// Mkdir creates a virtual folder inside the GRF.
+//
+// GRF files have no folder entries, so an empty folder only exists until the
+// archive is closed. This is mainly for WebDAV support.
 func (a *Archive) Mkdir(name string) error {
 	a.m.Lock()
 	defer a.m.Unlock()

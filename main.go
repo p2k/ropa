@@ -31,6 +31,8 @@ import (
 	"strings"
 )
 
+// keep lists the sound files that beamsonly leaves untouched by default; these
+// are the item drop sounds that accompany the colored drop beams.
 var keep = map[string]bool{
 	"data/wav/effect/drop_blue.wav":   true,
 	"data/wav/effect/drop_green.wav":  true,
@@ -43,20 +45,22 @@ var keep = map[string]bool{
 func printUsage() {
 	fmt.Fprintf(flag.CommandLine.Output(), `Usage: %s <command> [<args>]
 
-   list       List files in a GRF file
-   extract    Extract a GRF file
-   update     Update a GRF file
-   rename     Rename files inside a GRF file
-   checksum   Calculate checksums for a GRF file's contents
-   verify     Verify the contents of a GRF file
-   encrypt    Encrypt a GRF file (GRF Editor compatible)
-   decrypt    Decrypt a GRF file (GRF Editor compatible)
-   optimize   Optimize a GRF file
-   recompress Recompress a GRF file
-   filebase   Build a filebase
-   symsort    Sort a symlink file
-   beamsonly  Build the beams-only GRF
-   serve      Serve a GRF through WebDAV
+   list         List files in a GRF file
+   extract      Extract a GRF file
+   update       Update a GRF file
+   rename       Rename files inside a GRF file
+   checksum     Calculate checksums for a GRF file's contents
+   verify       Verify the contents of a GRF file
+   encrypt      Encrypt a GRF file (GRF Editor compatible)
+   decrypt      Decrypt a GRF file (GRF Editor compatible)
+   optimize     Optimize a GRF file
+   recompress   Recompress a GRF file
+   filebase     Build a filebase
+   assemble     Assemble a GRF file from a filebase
+   contentcheck Check a filebase content folder and delete broken files
+   symsort      Sort a symlink file
+   beamsonly    Build the beams-only GRF
+   serve        Serve a GRF through WebDAV
 `, os.Args[0])
 }
 
@@ -465,6 +469,11 @@ The filebase file should end with ".filebase.yml" or ".filebase.yml.gz". Input f
 		}
 	case "serve":
 		serve.Parse(os.Args[2:])
+		if serve.NArg() < 1 {
+			fmt.Println("Error: missing path to GRF file")
+			serve.Usage()
+			os.Exit(1)
+		}
 		args := serve.Args()
 		if !runServe(args[0], *serveKeyFile, *servePort, *serveCompress, !*serveCP1252, *serveReadonly) {
 			os.Exit(1)
