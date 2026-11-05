@@ -452,18 +452,17 @@ func (c *grfEditorCipher) encipherInFile(f io.ReadWriteSeeker, h hash.Hash, offs
 
 func (c *grfEditorCipher) Read(dst []byte) (n int, err error) {
 	n, err = c.r.Read(dst)
-	if n == 0 {
-		return 0, err
+	if n > 0 {
+		// Only the bytes read, or the cipher state runs ahead
+		c.encipherBlock(dst[:n])
 	}
-	c.encipherBlock(dst)
 	return
 }
 
-func (c *grfEditorCipher) Write(dst []byte) (n int, err error) {
-	n, err = c.b.Write(dst)
-	if err != nil || n == 0 {
-		return
-	}
+func (c *grfEditorCipher) Write(src []byte) (n int, err error) {
+	// Encipher a copy; the caller's buffer must not be modified
+	c.b.Reset()
+	c.b.Write(src)
 	buf := c.b.Bytes()
 	c.encipherBlock(buf)
 	return c.w.Write(buf)
@@ -553,6 +552,13 @@ func (a *Archive) SetGRFEditorEncryptionKey(key []byte, addMissingInfo bool) err
 	}
 
 	return nil
+}
+
+// shouldEncrypt tells whether a file written with the given compression level
+// gets GRF Editor encryption. Uncompressed files and the encryption info file,
+// which is read to check the key, are never encrypted.
+func (a *Archive) shouldEncrypt(name string, compress int) bool {
+	return compress != 0 && a.GRFEditorEncryptionEnabled && a.grfEditorKey != nil && name != EncryptionInfoFileName
 }
 
 // GRFEditorEncryptionKey returns a copy of the currently set GRF Editor

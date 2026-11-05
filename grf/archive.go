@@ -968,7 +968,7 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 	a.m.Lock()
 	defer a.m.Unlock()
 
-	encrypt := compress != 0 && a.GRFEditorEncryptionEnabled && a.grfEditorKey != nil
+	encrypt := a.shouldEncrypt(name, compress)
 
 	hasher := blake3.New(32, nil)
 	streamHasher := blake3.New(32, nil)
@@ -976,66 +976,60 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 	if err != nil {
 		return nil, err
 	}
+	start := int64(a.insertOffset) + LogicalStartOffset
 	tr := io.TeeReader(r, hasher)
 	var s int64
 	var flags uint8
-	if compress < 10 {
-		var w io.WriteCloser
-		var tw io.Writer
-		if compress != 0 {
-			flags = FileFlag
-			w, err = zlib.NewWriterLevel(a.wfile, compress)
-			if encrypt {
-				tw = w
-			} else {
-				tw = io.MultiWriter(w, streamHasher)
-			}
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			streamHasher = hasher
-			w = a.wfile
-			tw = w
-		}
-		s, err = io.Copy(tw, tr)
+	if compress == 0 {
+		// Stored as is, so the stream is the content
+		streamHasher = hasher
+		s, err = io.Copy(a.wfile, tr)
 		if err != nil {
 			return nil, err
 		}
-		if compress != 0 {
-			err = w.Close()
-			if err != nil {
-				return nil, err
-			}
+	} else if compress < 10 {
+		flags = FileFlag
+		var out io.Writer = a.wfile
+		if !encrypt {
+			out = io.MultiWriter(a.wfile, streamHasher)
+		}
+		w, err := zlib.NewWriterLevel(out, compress)
+		if err != nil {
+			return nil, err
+		}
+		s, err = io.Copy(w, tr)
+		if err != nil {
+			return nil, err
+		}
+		err = w.Close()
+		if err != nil {
+			return nil, err
 		}
 		if encrypt {
-			realStart := int64(a.insertOffset) - LogicalStartOffset
-			realEnd, err := a.wfile.Seek(0, io.SeekCurrent)
+			// The cipher depends on the uncompressed size, which is only known
+			// now, so encrypt the written stream in place
+			end, err := a.wfile.Seek(0, io.SeekCurrent)
 			if err != nil {
 				return nil, err
 			}
 			c := newGRFEditorCipher(nil, nil, a.grfEditorKey, uint32(s))
-			err = c.encipherInFile(a.wfile, streamHasher, realStart, realEnd-realStart)
+			err = c.encipherInFile(a.wfile, streamHasher, start, end-start)
 			if err != nil {
 				return nil, err
 			}
 		}
 	} else {
-		w := &bytes.Buffer{}
-		s, err = io.Copy(w, tr)
+		flags = FileFlag
+		buf := &bytes.Buffer{}
+		s, err = io.Copy(buf, tr)
 		if err != nil {
 			return nil, err
 		}
-		b := w.Bytes()
-		b = zopfli.Zlib(b, compress, b)
+		b := zopfli.Zlib(buf.Bytes(), compress, nil)
 		if encrypt {
-			c := newGRFEditorCipher(nil, nil, a.grfEditorKey, uint32(s))
-			c.encipherBlock(b)
+			newGRFEditorCipher(nil, nil, a.grfEditorKey, uint32(s)).encipherBlock(b)
 		}
-		_, err = streamHasher.Write(b)
-		if err != nil {
-			return nil, err
-		}
+		streamHasher.Write(b) // never fails
 		_, err = a.wfile.Write(b)
 		if err != nil {
 			return nil, err
@@ -1064,61 +1058,43 @@ func (a *Archive) PutBytes(name string, p []byte, compress int) (*FileHeader, er
 	a.m.Lock()
 	defer a.m.Unlock()
 
-	encrypt := compress != 0 && a.GRFEditorEncryptionEnabled && a.grfEditorKey != nil
+	encrypt := a.shouldEncrypt(name, compress)
 
-	hasher := blake3.New(32, nil)
-	hasher.Write(p) // never fails
-	streamHasher := blake3.New(32, nil)
 	err := a.preparePut(name)
 	if err != nil {
 		return nil, err
 	}
 
 	s := uint32(len(p))
+	b := p
 	var flags uint8
-	if compress < 10 {
-		var w io.WriteCloser
-		var tw io.Writer
-		if compress != 0 {
-			flags = FileFlag
-			w, err = zlib.NewWriterLevel(a.wfile, compress)
+	if compress != 0 {
+		flags = FileFlag
+		if compress < 10 {
+			buf := &bytes.Buffer{}
+			w, err := zlib.NewWriterLevel(buf, compress)
 			if err != nil {
 				return nil, err
 			}
-			if encrypt {
-				w = newGRFEditorCipher(nil, w, a.grfEditorKey, s)
+			_, err = w.Write(p)
+			if err != nil {
+				return nil, err
 			}
-			tw = io.MultiWriter(w, streamHasher)
-		} else {
-			streamHasher = hasher
-			w = a.wfile
-			tw = w
-		}
-		_, err = tw.Write(p)
-		if err != nil {
-			return nil, err
-		}
-		if compress != 0 {
 			err = w.Close()
 			if err != nil {
 				return nil, err
 			}
+			b = buf.Bytes()
+		} else {
+			b = zopfli.Zlib(p, compress, nil)
 		}
-	} else {
-		b := make([]byte, len(p))
-		b = zopfli.Zlib(p, compress, b)
 		if encrypt {
-			c := newGRFEditorCipher(nil, nil, a.grfEditorKey, s)
-			c.encipherBlock(b)
+			newGRFEditorCipher(nil, nil, a.grfEditorKey, s).encipherBlock(b)
 		}
-		_, err = streamHasher.Write(b)
-		if err != nil {
-			return nil, err
-		}
-		_, err = a.wfile.Write(b)
-		if err != nil {
-			return nil, err
-		}
+	}
+	_, err = a.wfile.Write(b)
+	if err != nil {
+		return nil, err
 	}
 	h, err := a.finalizePut(name, s, flags)
 	if err != nil {
@@ -1126,9 +1102,16 @@ func (a *Archive) PutBytes(name string, p []byte, compress int) (*FileHeader, er
 	}
 	h.GRFEditorEncrypted = encrypt
 	h.GRFEditorEncryptionChecked = true
-	h.Hash.SetWithHasher(hasher)
-	h.StreamHash.SetWithHasher(streamHasher)
+	h.Hash.SetWithHasher(hashOf(p))
+	h.StreamHash.SetWithHasher(hashOf(b))
 	return h, nil
+}
+
+// hashOf returns a BLAKE3-256 hasher that has been fed with p.
+func hashOf(p []byte) hash.Hash {
+	h := blake3.New(32, nil)
+	h.Write(p) // never fails
+	return h
 }
 
 func (a *Archive) preparePut(name string) error {

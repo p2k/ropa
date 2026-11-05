@@ -16,6 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Files written with `PutBytes` (for example through `serve`) all got the same content hash, so deduplicating in the same session could link files with different contents.
 - `serve`: a file deleted and then uploaded again under the same name was missing from folder listings until the archive was reopened.
 - `optimize` had a data race between its progress display and the next step.
+- Writing to an encrypted archive with `update -nopipeline`, `recompress -nopipeline` or `serve` produced corrupted files while reporting success.
+- `update` and `recompress` without `-nopipeline` wrote new files unencrypted into encrypted archives.
+- `update -nopipeline` and `recompress -nopipeline` with Zopfli (levels above 9) stored files as if they were uncompressed, so they could not be read back.
+- The `__encryption.info` marker is never encrypted, so an archive stays openable when the marker is copied, for example by `recompress`.
+- `Put` and `PutBytes` in the `grf` package recorded stream hashes of the uncompressed instead of the compressed data.
 
 ## [1.0.1] - 2026-11-05
 
