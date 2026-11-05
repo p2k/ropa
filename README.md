@@ -13,7 +13,7 @@ Features
 - **Reads every common compression variant**: zlib, uncompressed entries, LZMA (as written by LessGRF / GRFCrush) and the legacy DES/mixcrypt encrypted entries.
 - **GRF Editor compatible encryption**: encrypt and decrypt archives with a GRF Editor key file.
 - **Fast parallel compression** using all CPU cores, with zlib levels 0–9 or Zopfli (levels above 9).
-- **Deduplication**: identical files can share one copy of their data. ROPA shows these as *links*, and a plain `SYMLINKS` text file keeps them intact when you extract and rebuild.
+- **Deduplication**: identical files can share one copy of their data. ROPA shows these as *links*, and a plain `SYMLINKS` text file keeps them intact when you extract and rebuild. Links work like copy-on-write copies: replacing one of the files changes only that file.
 - **Integrity checking** with BLAKE3 checksums of file contents or raw streams, plus a best-effort repair mode.
 - **Defragmentation and sorting** that work in place and can be interrupted safely.
 - **WebDAV server**: mount a GRF as a network drive and edit it with any file manager.

@@ -412,8 +412,11 @@ func (f *ArchivedFile) Close() error {
 
 	if f.rw != nil {
 		h, err := f.a.PutBytes(f.h.Name, f.rw, f.rwc)
-		if err != nil {
+		if err == nil {
+			// Refer to the archive's header (a new file had a placeholder)
+			// and don't write the data again on another Close
 			f.h = h
+			f.rw = nil
 		}
 		return err
 	}

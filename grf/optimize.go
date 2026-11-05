@@ -42,6 +42,8 @@ func (a *Archive) Sort() {
 	if !sort.SliceIsSorted(a.entriesInSequence, sorter) {
 		sort.Slice(a.entriesInSequence, sorter)
 		a.hasChanges = true
+		// The canonical file of a link group is the first one in sequence
+		a.rebuildLinks()
 	}
 }
 
@@ -56,6 +58,8 @@ func (a *Archive) Dedup(ctx context.Context, progress chan<- int64) (bool, error
 
 	a.m.Lock()
 	defer a.m.Unlock()
+	// Offsets change, so derive the link groups again (also when cancelled)
+	defer a.rebuildLinks()
 
 	var totalProcessed int64
 	found := false
@@ -68,15 +72,23 @@ func (a *Archive) Dedup(ctx context.Context, progress chan<- int64) (bool, error
 
 		e := byOffset[h.Offset]
 		if e != nil {
-			if h.Linkname != e.Name {
-				h.Linkname = e.Name
+			if e.Offset != h.Offset {
+				// e has been linked to another file below; follow it
+				found = true
+				a.hasChanges = true
+				h.CompressedSize = e.CompressedSize
+				h.AlignedLength = e.AlignedLength
+				h.Size = e.Size
+				h.Flags = e.Flags
+				h.Offset = e.Offset
+				h.GRFEditorEncrypted = e.GRFEditorEncrypted
+				h.GRFEditorEncryptionChecked = e.GRFEditorEncryptionChecked
+				h.StreamHash = e.StreamHash
 			}
 			if h.Hash != e.Hash {
 				h.Hash = e.Hash
 			}
 			continue
-		} else if h.Linkname != "" {
-			h.Linkname = ""
 		}
 
 		err := h.seekAndHashIfNeeded(a.rfile, hasher, streamHasher, a.grfEditorKey)
@@ -101,14 +113,14 @@ func (a *Archive) Dedup(ctx context.Context, progress chan<- int64) (bool, error
 				h.Size != hh.Size || h.Flags != hh.Flags || h.Offset != hh.Offset {
 				found = true
 				a.hasChanges = true
-				h.Linkname = hh.Name
 				h.CompressedSize = hh.CompressedSize
 				h.AlignedLength = hh.AlignedLength
 				h.Size = hh.Size
 				h.Flags = hh.Flags
 				h.Offset = hh.Offset
-			} else if h.Linkname != hh.Name {
-				h.Linkname = hh.Name
+				h.GRFEditorEncrypted = hh.GRFEditorEncrypted
+				h.GRFEditorEncryptionChecked = hh.GRFEditorEncryptionChecked
+				h.StreamHash = hh.StreamHash
 			}
 		} else {
 			hashMap[h.Hash] = h
@@ -199,6 +211,8 @@ func (a *Archive) Defragment(ctx context.Context, progress chan<- int64) error {
 
 	a.m.Lock()
 	defer a.m.Unlock()
+	// Offsets change, so derive the link groups again (also when cancelled)
+	defer a.rebuildLinks()
 
 	// Take inventory
 	byOffset := make(map[uint32]*FileHeader)     // For detecting links
@@ -216,15 +230,9 @@ func (a *Archive) Defragment(ctx context.Context, progress chan<- int64) error {
 		} else {
 			e := byOffset[h.Offset]
 			if e == nil {
-				if h.Linkname != "" {
-					h.Linkname = ""
-				}
 				currentSequence = append(currentSequence, h)
 				byOffset[h.Offset] = h
 			} else {
-				if h.Linkname != e.Name {
-					h.Linkname = e.Name
-				}
 				links[e] = append(links[e], h)
 			}
 		}

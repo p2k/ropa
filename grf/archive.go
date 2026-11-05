@@ -19,8 +19,6 @@
 //  limitations under the Licence.
 //
 
-// TODO: Align file and file table insertion
-
 // Package grf reads and writes GRF archives as used by the Ragnarok Online
 // client.
 package grf
@@ -365,9 +363,11 @@ type FileHeader struct {
 	// Forward slashes must be used instead of back slashes.
 	Name string
 
-	// Linkname is the name of the canonical file that holds the content.
+	// Linkname is the name of the canonical file that shares its data with
+	// this file.
 	//
-	// If Linkname is an empty string, the file is not a linked file.
+	// If Linkname is an empty string, the file is not a linked file. The
+	// archive keeps this up to date; do not change it.
 	Linkname string
 
 	// CompressedSize is the compressed size of the file in bytes.
@@ -539,6 +539,7 @@ type Archive struct {
 	entriesInSequence []*FileHeader
 	entriesByName     map[string]*FileHeader
 	folders           map[string]map[string]bool
+	linkGroups        map[uint32][]*FileHeader // offset -> members, see links.go
 
 	wfile        *os.File
 	rfile        io.ReadSeekCloser
@@ -755,19 +756,12 @@ func OpenIO(file io.ReadSeekCloser, fileSize uint32, koreanFilenames bool) (*Arc
 	}
 	br := bufio.NewReader(r)
 	var highestOffset, thisOffset uint32
-	byOffset := make(map[uint32]*FileHeader)
 	for i := range a.entriesInSequence {
 		h := &FileHeader{}
 		err = h.ReadFrom(br, d)
 		if err != nil {
 			r.Close()
 			return nil, err
-		}
-		e := byOffset[h.Offset]
-		if e != nil {
-			h.Linkname = e.Name
-		} else {
-			byOffset[h.Offset] = h
 		}
 		a.entriesInSequence[i] = h
 		if e := a.entriesByName[h.Name]; e != nil {
@@ -788,6 +782,7 @@ func OpenIO(file io.ReadSeekCloser, fileSize uint32, koreanFilenames bool) (*Arc
 	if err != io.EOF {
 		return nil, &ArchiveError{"file table with trailing bytes"}
 	}
+	a.rebuildLinks()
 
 	// Defuse auto-close
 	success = true
@@ -973,7 +968,7 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 	a.m.Lock()
 	defer a.m.Unlock()
 
-	encrypt := compress != 0 && a.GRFEditorEncryptionEnabled && a.grfEditorKey != nil
+	encrypt := a.shouldEncrypt(name, compress)
 
 	hasher := blake3.New(32, nil)
 	streamHasher := blake3.New(32, nil)
@@ -981,77 +976,71 @@ func (a *Archive) Put(name string, r io.Reader, compress int) (*FileHeader, erro
 	if err != nil {
 		return nil, err
 	}
+	start := int64(a.insertOffset) + LogicalStartOffset
 	tr := io.TeeReader(r, hasher)
 	var s int64
 	var flags uint8
-	if compress < 10 {
-		var w io.WriteCloser
-		var tw io.Writer
-		if compress != 0 {
-			flags = FileFlag
-			w, err = zlib.NewWriterLevel(a.wfile, compress)
-			if encrypt {
-				tw = w
-			} else {
-				tw = io.MultiWriter(w, streamHasher)
-			}
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			streamHasher = hasher
-			w = a.wfile
-			tw = w
-		}
-		s, err = io.Copy(tw, tr)
+	if compress == 0 {
+		// Stored as is, so the stream is the content
+		streamHasher = hasher
+		s, err = io.Copy(a.wfile, tr)
 		if err != nil {
 			return nil, err
 		}
-		if compress != 0 {
-			err = w.Close()
-			if err != nil {
-				return nil, err
-			}
+	} else if compress < 10 {
+		flags = FileFlag
+		var out io.Writer = a.wfile
+		if !encrypt {
+			out = io.MultiWriter(a.wfile, streamHasher)
+		}
+		w, err := zlib.NewWriterLevel(out, compress)
+		if err != nil {
+			return nil, err
+		}
+		s, err = io.Copy(w, tr)
+		if err != nil {
+			return nil, err
+		}
+		err = w.Close()
+		if err != nil {
+			return nil, err
 		}
 		if encrypt {
-			realStart := int64(a.insertOffset) - LogicalStartOffset
-			realEnd, err := a.wfile.Seek(0, io.SeekCurrent)
+			// The cipher depends on the uncompressed size, which is only known
+			// now, so encrypt the written stream in place
+			end, err := a.wfile.Seek(0, io.SeekCurrent)
 			if err != nil {
 				return nil, err
 			}
 			c := newGRFEditorCipher(nil, nil, a.grfEditorKey, uint32(s))
-			err = c.encipherInFile(a.wfile, streamHasher, realStart, realEnd-realStart)
+			err = c.encipherInFile(a.wfile, streamHasher, start, end-start)
 			if err != nil {
 				return nil, err
 			}
 		}
 	} else {
-		w := &bytes.Buffer{}
-		s, err = io.Copy(w, tr)
+		flags = FileFlag
+		buf := &bytes.Buffer{}
+		s, err = io.Copy(buf, tr)
 		if err != nil {
 			return nil, err
 		}
-		b := w.Bytes()
-		b = zopfli.Zlib(b, compress, b)
+		b := zopfli.Zlib(buf.Bytes(), compress, nil)
 		if encrypt {
-			c := newGRFEditorCipher(nil, nil, a.grfEditorKey, uint32(s))
-			c.encipherBlock(b)
+			newGRFEditorCipher(nil, nil, a.grfEditorKey, uint32(s)).encipherBlock(b)
 		}
-		_, err = streamHasher.Write(b)
-		if err != nil {
-			return nil, err
-		}
+		streamHasher.Write(b) // never fails
 		_, err = a.wfile.Write(b)
 		if err != nil {
 			return nil, err
 		}
 	}
 	h, err := a.finalizePut(name, uint32(s), flags)
-	h.GRFEditorEncrypted = encrypt
-	h.GRFEditorEncryptionChecked = true
 	if err != nil {
 		return nil, err
 	}
+	h.GRFEditorEncrypted = encrypt
+	h.GRFEditorEncryptionChecked = true
 	h.Hash.SetWithHasher(hasher)
 	h.StreamHash.SetWithHasher(streamHasher)
 	return h, nil
@@ -1069,70 +1058,60 @@ func (a *Archive) PutBytes(name string, p []byte, compress int) (*FileHeader, er
 	a.m.Lock()
 	defer a.m.Unlock()
 
-	encrypt := compress != 0 && a.GRFEditorEncryptionEnabled && a.grfEditorKey != nil
+	encrypt := a.shouldEncrypt(name, compress)
 
-	hasher := blake3.New(32, nil)
-	streamHasher := blake3.New(32, nil)
 	err := a.preparePut(name)
 	if err != nil {
 		return nil, err
 	}
 
 	s := uint32(len(p))
+	b := p
 	var flags uint8
-	if compress < 10 {
-		var w io.WriteCloser
-		var tw io.Writer
-		if compress != 0 {
-			flags = FileFlag
-			w, err = zlib.NewWriterLevel(a.wfile, compress)
+	if compress != 0 {
+		flags = FileFlag
+		if compress < 10 {
+			buf := &bytes.Buffer{}
+			w, err := zlib.NewWriterLevel(buf, compress)
 			if err != nil {
 				return nil, err
 			}
-			if encrypt {
-				w = newGRFEditorCipher(nil, w, a.grfEditorKey, s)
+			_, err = w.Write(p)
+			if err != nil {
+				return nil, err
 			}
-			tw = io.MultiWriter(w, streamHasher)
-		} else {
-			streamHasher = hasher
-			w = a.wfile
-			tw = w
-		}
-		_, err = tw.Write(p)
-		if err != nil {
-			return nil, err
-		}
-		if compress != 0 {
 			err = w.Close()
 			if err != nil {
 				return nil, err
 			}
+			b = buf.Bytes()
+		} else {
+			b = zopfli.Zlib(p, compress, nil)
 		}
-	} else {
-		b := make([]byte, len(p))
-		b = zopfli.Zlib(p, compress, b)
 		if encrypt {
-			c := newGRFEditorCipher(nil, nil, a.grfEditorKey, s)
-			c.encipherBlock(b)
-		}
-		_, err = streamHasher.Write(b)
-		if err != nil {
-			return nil, err
-		}
-		_, err = a.wfile.Write(b)
-		if err != nil {
-			return nil, err
+			newGRFEditorCipher(nil, nil, a.grfEditorKey, s).encipherBlock(b)
 		}
 	}
-	h, err := a.finalizePut(name, s, flags)
-	h.GRFEditorEncrypted = encrypt
-	h.GRFEditorEncryptionChecked = true
+	_, err = a.wfile.Write(b)
 	if err != nil {
 		return nil, err
 	}
-	h.Hash.SetWithHasher(hasher)
-	h.StreamHash.SetWithHasher(streamHasher)
+	h, err := a.finalizePut(name, s, flags)
+	if err != nil {
+		return nil, err
+	}
+	h.GRFEditorEncrypted = encrypt
+	h.GRFEditorEncryptionChecked = true
+	h.Hash.SetWithHasher(hashOf(p))
+	h.StreamHash.SetWithHasher(hashOf(b))
 	return h, nil
+}
+
+// hashOf returns a BLAKE3-256 hasher that has been fed with p.
+func hashOf(p []byte) hash.Hash {
+	h := blake3.New(32, nil)
+	h.Write(p) // never fails
+	return h
 }
 
 func (a *Archive) preparePut(name string) error {
@@ -1173,10 +1152,6 @@ func (a *Archive) finalizePut(name string, uncompressedSize uint32, flags uint8)
 	if a.entriesByName == nil {
 		a.entriesByName = make(map[string]*FileHeader)
 	}
-	// TODO: This can change linked files; when replacing a file that other
-	// entries link to, the links keep pointing to the old data while their
-	// Linkname still names the replaced file. After reopening, the links form
-	// their own group since links are derived from shared offsets.
 	header := a.entriesByName[name]
 	if header == nil {
 		header = &FileHeader{
@@ -1192,7 +1167,14 @@ func (a *Archive) finalizePut(name string, uncompressedSize uint32, flags uint8)
 		a.insertFolderEntry(name)
 		a.FilesCount++
 	} else {
-		header.Linkname = ""
+		if header.Deleted {
+			header.Deleted = false
+			a.insertFolderEntry(name)
+			a.FilesCount++
+		} else {
+			// Copy-on-write: other members of the link group keep the old data
+			a.leaveLinkGroup(header)
+		}
 		header.CompressedSize = cs
 		header.AlignedLength = cs + pad
 		header.Size = uncompressedSize
@@ -1200,10 +1182,6 @@ func (a *Archive) finalizePut(name string, uncompressedSize uint32, flags uint8)
 		header.Offset = a.insertOffset
 		header.Hash.SetZero()
 		header.StreamHash.SetZero()
-		if header.Deleted {
-			header.Deleted = false
-			a.FilesCount++
-		}
 	}
 	a.insertOffset += header.AlignedLength
 	a.hasChanges = true
@@ -1212,8 +1190,9 @@ func (a *Archive) finalizePut(name string, uncompressedSize uint32, flags uint8)
 
 // Link creates a hard link to the given file.
 //
-// Does nothing if names are equal. If the given file already is a link, will
-// walk back to the root file.
+// The new entry shares the data of linkname. Does nothing if names are equal.
+// An existing file at name is replaced. Returns fs.ErrNotExist if linkname does
+// not exist.
 func (a *Archive) Link(name string, linkname string) (*FileHeader, error) {
 	if a.wfile == nil {
 		return nil, ErrReadOnly
@@ -1230,8 +1209,10 @@ func (a *Archive) Link(name string, linkname string) (*FileHeader, error) {
 
 // LinkHeader creates a hard link to the given file header.
 //
-// Does nothing if name is equal to the name of the given file header. If the
-// given header already is a link, will walk back to the root file.
+// The new entry shares the data of the given header, which may itself be a
+// link. Does nothing if name is equal to the name of the given file header. An
+// existing file at name is replaced. Returns nil if the archive is read only
+// or the given header has been deleted.
 func (a *Archive) LinkHeader(name string, header *FileHeader) *FileHeader {
 	if a.wfile == nil {
 		return nil
@@ -1244,8 +1225,8 @@ func (a *Archive) LinkHeader(name string, header *FileHeader) *FileHeader {
 	a.m.Lock()
 	defer a.m.Unlock()
 
-	for header.Linkname != "" {
-		header = a.entriesByName[header.Linkname]
+	if header.Deleted {
+		return nil
 	}
 
 	if a.entriesByName == nil {
@@ -1253,32 +1234,28 @@ func (a *Archive) LinkHeader(name string, header *FileHeader) *FileHeader {
 	}
 	link := a.entriesByName[name]
 	if link == nil {
-		link = &FileHeader{
-			Name:           name,
-			Linkname:       header.Name,
-			CompressedSize: header.CompressedSize,
-			AlignedLength:  header.AlignedLength,
-			Size:           header.Size,
-			Flags:          header.Flags,
-			Offset:         header.Offset,
-			Hash:           header.Hash,
-			StreamHash:     header.StreamHash,
-		}
+		link = &FileHeader{Name: name}
 		a.entriesInSequence = append(a.entriesInSequence, link)
 		a.entriesByName[name] = link
 		a.insertFolderEntry(name)
 		a.FilesCount++
-	} else {
-		link.Linkname = header.Name
-		link.CompressedSize = header.CompressedSize
-		link.AlignedLength = header.AlignedLength
-		link.Size = header.Size
-		link.Flags = header.Flags
-		link.Offset = header.Offset
-		link.Hash = header.Hash
-		link.StreamHash = header.StreamHash
+	} else if link.Deleted {
 		link.Deleted = false
+		a.insertFolderEntry(name)
+		a.FilesCount++
+	} else {
+		a.leaveLinkGroup(link)
 	}
+	link.CompressedSize = header.CompressedSize
+	link.AlignedLength = header.AlignedLength
+	link.Size = header.Size
+	link.Flags = header.Flags
+	link.Offset = header.Offset
+	link.GRFEditorEncrypted = header.GRFEditorEncrypted
+	link.GRFEditorEncryptionChecked = header.GRFEditorEncryptionChecked
+	link.Hash = header.Hash
+	link.StreamHash = header.StreamHash
+	a.joinLinkGroup(link, header)
 
 	a.hasChanges = true
 	return link
@@ -1445,13 +1422,15 @@ func (a *Archive) doRename(oldname, newname string) bool {
 
 	delete(a.entriesByName, oldname)
 	newh := a.entriesByName[newname]
-	if newh != nil {
+	if newh != nil && !newh.Deleted {
 		newh.Deleted = true
 		a.FilesCount--
+		a.leaveLinkGroup(newh)
 	}
 
 	oldh.Name = newname
 	a.entriesByName[newname] = oldh
+	a.renameInLinkGroup(oldh)
 
 	// Fix folder entry
 	olddir, oldbase := path.Split(oldname)
@@ -1491,8 +1470,8 @@ func (a *Archive) Rename(oldname, newname string) bool {
 // Delete removes a file from the GRF.
 //
 // The file is not physically removed, just its file header won't be written on
-// closing. Files linking to it are unaffected since they share the data.
-// Returns false if the archive is read only or the file does not exist.
+// closing. Files linked to it keep their data. Returns false if the archive is
+// read only or the file does not exist.
 func (a *Archive) Delete(name string) bool {
 	if a.wfile == nil {
 		return false
@@ -1511,6 +1490,7 @@ func (a *Archive) Delete(name string) bool {
 	h.Deleted = true
 	a.FilesCount--
 	a.hasChanges = true
+	a.leaveLinkGroup(h)
 
 	if a.folders != nil {
 		dir, name := path.Split(name)
@@ -1533,6 +1513,7 @@ func (a *Archive) doRemoveAll(name string) {
 			h.Deleted = true
 			a.FilesCount--
 			a.hasChanges = true
+			a.leaveLinkGroup(h)
 		}
 	}
 

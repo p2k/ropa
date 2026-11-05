@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-05
+
+If you wrote to encrypted archives with an earlier version: files added by `update` or `recompress` without `-nopipeline` were stored unencrypted but are still readable; run `ropa encrypt` on the archive to encrypt them. Files written with `-key` by `-nopipeline` or `serve`, and Zopfli-compressed files written with `-nopipeline`, are damaged and need to be added again.
+
+### Changed
+
+- `optimize -dedup` now also catches files that shared data with a file it had just deduplicated, which previously needed a second run.
+
+### Fixed
+
+- Replacing, deleting or renaming a file that other entries were linked to left those links pointing at the old name until the archive was reopened. `update` could then give a new link from `SYMLINKS` the replaced file's new data instead of the data of the file it names, and `Link` in the `grf` package crashed after the original file had been renamed.
+- Files written with `PutBytes` (for example through `serve`) all got the same content hash, so deduplicating in the same session could link files with different contents.
+- `serve`: a file deleted and then uploaded again under the same name was missing from folder listings until the archive was reopened.
+- `optimize` had a data race between its progress display and the next step.
+- Writing to an encrypted archive with `update -nopipeline`, `recompress -nopipeline` or `serve` produced corrupted files while reporting success.
+- `update` and `recompress` without `-nopipeline` wrote new files unencrypted into encrypted archives.
+- `update -nopipeline` and `recompress -nopipeline` with Zopfli (levels above 9) stored files as if they were uncompressed, so they could not be read back.
+- The `__encryption.info` marker is never encrypted, so an archive stays openable when the marker is copied, for example by `recompress`.
+- `Put` and `PutBytes` in the `grf` package recorded stream hashes of the uncompressed instead of the compressed data.
+
 ## [1.0.1] - 2026-11-05
 
 ### Changed
@@ -39,6 +59,7 @@ First tagged release.
 - Read errors in filebases, checksum, whiteout, integrity and `SYMLINKS` files were silently ignored, so a truncated file could be processed as if it were complete.
 - Hex hashes of the wrong length were partially accepted.
 
-[Unreleased]: https://github.com/p2k/ropa/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/p2k/ropa/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/p2k/ropa/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/p2k/ropa/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/p2k/ropa/releases/tag/v1.0.0

@@ -298,9 +298,6 @@ func (a *Archive) HashAll(streamHash bool, ctx context.Context, progress chan<- 
 
 		e := byOffset[h.Offset]
 		if e != nil {
-			if h.Linkname != e.Name {
-				h.Linkname = e.Name
-			}
 			if h.Hash != e.Hash {
 				h.Hash = e.Hash
 			}
@@ -313,8 +310,6 @@ func (a *Archive) HashAll(streamHash bool, ctx context.Context, progress chan<- 
 				all[h.Name] = h.StreamHash
 			}
 			continue
-		} else if h.Linkname != "" {
-			h.Linkname = ""
 		}
 
 		err := h.seekAndHashIfNeeded(a.rfile, hasher, streamHasher, a.grfEditorKey)
@@ -387,17 +382,12 @@ func (a *Archive) VerifyAll(streamHash bool, hashMap map[string]FileHeaderHash, 
 		if !h.Deleted {
 			e := byOffset[h.Offset]
 			if e != nil {
-				if h.Linkname != e.Name {
-					h.Linkname = e.Name
-				}
 				if h.Hash != e.Hash {
 					h.Hash = e.Hash
 				}
 				if h.StreamHash != e.StreamHash {
 					h.StreamHash = e.StreamHash
 				}
-			} else if h.Linkname != "" {
-				h.Linkname = ""
 			}
 
 			x := hashMap[h.Name]

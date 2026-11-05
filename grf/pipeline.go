@@ -43,6 +43,9 @@ type pipelineWorker struct {
 	size  int64
 	flags uint8
 
+	key       []byte // GRF Editor encryption key, nil if disabled
+	encrypted bool   // out has been encrypted
+
 	empty chan bool
 	ready chan bool
 	done  chan bool
@@ -51,8 +54,9 @@ type pipelineWorker struct {
 	exit bool // when done gets closed
 }
 
-func newPipelineWorker(compress int) *pipelineWorker {
+func newPipelineWorker(compress int, key []byte) *pipelineWorker {
 	pw := &pipelineWorker{
+		key:   key,
 		in:    &bytes.Buffer{},
 		out:   make([]byte, 0, 65536),
 		empty: make(chan bool, 1),
@@ -72,6 +76,7 @@ func (pw *pipelineWorker) work(compress int) {
 			panic(err)
 		}
 		for range pw.ready {
+			pw.encrypted = false
 			if pw.lname == "" && !pw.raw && pw.flags != 0 && pw.err == nil {
 				pw.outp = 0
 				w.Reset(pw)
@@ -79,16 +84,27 @@ func (pw *pipelineWorker) work(compress int) {
 				if pw.err == nil {
 					pw.err = w.Close()
 				}
+				pw.encrypt()
 			}
 			pw.done <- true
 		}
 	} else {
 		for range pw.ready {
+			pw.encrypted = false
 			if pw.lname == "" && !pw.raw && pw.flags != 0 && pw.err == nil {
 				pw.out = zopfli.Zlib(pw.in.Bytes(), compress, pw.out)
+				pw.encrypt()
 			}
 			pw.done <- true
 		}
+	}
+}
+
+// encrypt the compressed output if encryption is enabled.
+func (pw *pipelineWorker) encrypt() {
+	pw.encrypted = pw.key != nil && pw.err == nil && pw.name != EncryptionInfoFileName
+	if pw.encrypted {
+		newGRFEditorCipher(nil, nil, pw.key, uint32(pw.size)).encipherBlock(pw.out)
 	}
 }
 
@@ -137,6 +153,9 @@ type Pipeline struct {
 // Values for compress > 9 will use Zopfli compression with the given number of
 // iterations; 15 is the recommended default for this.
 //
+// If GRF Editor encryption is enabled on the archive, compressed files are
+// encrypted like with Archive.Put; raw files are written as given.
+//
 // If the given archive is read only, this will produce errors in all uses.
 func NewPipeline(ar *Archive, size int, compress int) *Pipeline {
 	p := &Pipeline{
@@ -145,8 +164,13 @@ func NewPipeline(ar *Archive, size int, compress int) *Pipeline {
 		hs:         blake3.New(32, nil),
 		allDone:    make(chan bool),
 	}
+	// Like Archive.Put, encrypt compressed files if encryption is enabled
+	var key []byte
+	if compress != 0 && ar.GRFEditorEncryptionEnabled {
+		key = ar.GRFEditorEncryptionKey()
+	}
 	for i := 0; i < p.size; i++ {
-		p.workers = append(p.workers, newPipelineWorker(compress))
+		p.workers = append(p.workers, newPipelineWorker(compress, key))
 	}
 	// Writer routine
 	go func() {
@@ -169,8 +193,14 @@ func NewPipeline(ar *Archive, size int, compress int) *Pipeline {
 						} else {
 							var h *FileHeader
 							h, pw.err = ar.RawPutBytes(pw.name, pw.out, uint32(pw.size), pw.flags)
-							if pw.err == nil && !pw.inh.IsZero() {
-								h.Hash = pw.inh
+							if pw.err == nil {
+								if !pw.raw {
+									// Known, no need to rely on detection
+									h.GRFEditorEncrypted = pw.encrypted
+								}
+								if !pw.inh.IsZero() {
+									h.Hash = pw.inh
+								}
 							}
 							p.processed += pw.size
 							if p.pc != nil {
