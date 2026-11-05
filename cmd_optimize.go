@@ -85,7 +85,10 @@ func runOptimize(grfFilePath, keyFilePath string, dedup, sort, defrag, quiet boo
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		go func() {
+		// pc and bar are replaced between the phases, so pass the current ones
+		done := make(chan struct{})
+		go func(pc <-chan int64, bar *progressbar.ProgressBar) {
+			defer close(done)
 			for {
 				select {
 				case <-sc:
@@ -101,9 +104,10 @@ func runOptimize(grfFilePath, keyFilePath string, dedup, sort, defrag, quiet boo
 					}
 				}
 			}
-		}()
+		}(pc, bar)
 		_, err = ar.Dedup(ctx, pc)
 		close(pc)
+		<-done // the bar is used below
 		if err != nil {
 			if bar != nil {
 				bar.Exit()
@@ -156,7 +160,10 @@ func runOptimize(grfFilePath, keyFilePath string, dedup, sort, defrag, quiet boo
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		go func() {
+		// pc and bar are replaced between the phases, so pass the current ones
+		done := make(chan struct{})
+		go func(pc <-chan int64, bar *progressbar.ProgressBar) {
+			defer close(done)
 			for {
 				select {
 				case <-sc:
@@ -172,9 +179,10 @@ func runOptimize(grfFilePath, keyFilePath string, dedup, sort, defrag, quiet boo
 					}
 				}
 			}
-		}()
+		}(pc, bar)
 		err = ar.Defragment(ctx, pc)
 		close(pc)
+		<-done // the bar is used below
 		if err != nil {
 			if bar != nil {
 				bar.Exit()

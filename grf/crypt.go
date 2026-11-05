@@ -616,7 +616,11 @@ func (a *Archive) CheckGRFEditorEncryption(name string) error {
 		a.lf = nil
 	}
 
-	return a.doGRFEditorEncryptionCheck(h)
+	err := a.doGRFEditorEncryptionCheck(h)
+	if err == nil {
+		a.syncLinkGroup(h)
+	}
+	return err
 }
 
 // EnsureEncryptionStatus encrypts or decrypts the file in-place with the given
@@ -665,5 +669,7 @@ func (a *Archive) EnsureEncryptionStatus(name string) error {
 		h.StreamHash.SetWithHasher(streamHasher)
 	}
 
+	// Links share the data that has just been checked or changed in place
+	a.syncLinkGroup(h)
 	return nil
 }

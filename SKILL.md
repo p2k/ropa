@@ -136,7 +136,7 @@ Expected output: `data/t/a.txt` and `data/t/b.txt -> data/t/a.txt`. Then confirm
 
 - Import path: `github.com/p2k/ropa/grf` (needs cgo, since it uses the Zopfli wrapper).
 - `grf.Open(path, readonly, koreanFilenames)` and `grf.Create(...)` return an `*Archive`. Always call `Close()`: that is when the file table is written.
-- `Archive` implements `fs.FS`, `ReadDirFS`, `StatFS` and `GlobFS`. `Put`/`PutBytes` compress; `RawPut` stores pre-compressed zlib; `Link`/`LinkHeader` create links, which are entries that share an offset.
+- `Archive` implements `fs.FS`, `ReadDirFS`, `StatFS` and `GlobFS`. `Put`/`PutBytes` compress; `RawPut` stores pre-compressed zlib; `Link`/`LinkHeader` create links, which are entries that share an offset. Links are copy-on-write: writing to one member gives only that entry new data. The archive keeps `Linkname` up to date (see `grf/links.go`); don't set it yourself.
 - `NewPipeline(ar, workers, level)` compresses in parallel. Don't touch the archive until `Wait()` returns.
 - `Dedup`, `Sort`, `Defragment`, `HashAll`, `VerifyAll` and `SetGRFEditorEncryptionKey`/`EnsureEncryptionStatus` back the matching subcommands.
 - `grf.OpenSymlinks(pathOrDir)` reads and writes `SYMLINKS` files (lines of the form `name -> target`).
