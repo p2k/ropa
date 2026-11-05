@@ -24,11 +24,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/p2k/ropa/grf"
 	"io/fs"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"ropa/grf"
 	"runtime"
 	"sort"
 	"strings"

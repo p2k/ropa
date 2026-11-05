@@ -33,6 +33,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/p2k/ropa/zopfli"
 	"hash"
 	"io"
 	"io/fs"
@@ -40,7 +41,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"ropa/zopfli"
 	"strings"
 	"sync"
 

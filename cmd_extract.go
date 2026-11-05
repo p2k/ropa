@@ -23,11 +23,11 @@ package main
 
 import (
 	"fmt"
+	"github.com/p2k/ropa/grf"
 	"io/fs"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"ropa/grf"
 	"strings"
 
 	"github.com/schollz/progressbar/v3"

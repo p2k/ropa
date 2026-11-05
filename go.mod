@@ -1,4 +1,4 @@
-module ropa
+module github.com/p2k/ropa
 
 go 1.23.0
 

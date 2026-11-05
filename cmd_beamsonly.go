@@ -24,7 +24,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
-	"ropa/grf"
+	"github.com/p2k/ropa/grf"
 	"strings"
 )
 

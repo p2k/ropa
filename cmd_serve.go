@@ -24,12 +24,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/p2k/ropa/grf"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"ropa/grf"
 	"strings"
 
 	"golang.org/x/net/webdav"

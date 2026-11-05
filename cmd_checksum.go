@@ -25,10 +25,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/p2k/ropa/grf"
 	"io"
 	"os"
 	"os/signal"
-	"ropa/grf"
 
 	"github.com/schollz/progressbar/v3"
 )
