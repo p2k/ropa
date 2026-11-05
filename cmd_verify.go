@@ -25,9 +25,9 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"github.com/p2k/ropa/grf"
 	"os"
 	"os/signal"
-	"ropa/grf"
 	"strings"
 	"time"
 

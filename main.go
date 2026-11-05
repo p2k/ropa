@@ -24,10 +24,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/p2k/ropa/grf"
 	"os"
 	"path"
 	"path/filepath"
-	"ropa/grf"
 	"runtime/debug"
 	"strings"
 )
@@ -35,8 +35,9 @@ import (
 // version is set for release builds with -ldflags "-X main.version=x.y.z".
 var version = "dev"
 
-// versionString returns the version; development builds include the VCS
-// revision if available.
+// versionString returns the version. Without a version set at build time,
+// it uses the module version recorded by the Go toolchain (e.g. after
+// "go install github.com/p2k/ropa@vX.Y.Z") or, failing that, the VCS revision.
 func versionString() string {
 	if version != "dev" {
 		return version
@@ -44,6 +45,9 @@ func versionString() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return version
+	}
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return strings.TrimPrefix(v, "v")
 	}
 	var revision, modified string
 	for _, s := range info.Settings {

@@ -13,9 +13,9 @@ ROPA is a single Go binary (`ropa`) for Ragnarok Online GRF archives (version 0x
 go build -o ropa .
 ```
 
-- cgo must be enabled, because Zopfli is C. The module name is `ropa`, so build from the repository root.
+- cgo must be enabled, because Zopfli is C. The module path is `github.com/p2k/ropa`; internal imports use `github.com/p2k/ropa/grf` and `github.com/p2k/ropa/zopfli`. Users can also install with `go install github.com/p2k/ropa@latest`.
 - In a sandbox where the Go build cache isn't writable, set `GOCACHE=$TMPDIR/gocache`.
-- `ropa version` prints the version. Release builds set it with `-ldflags "-X main.version=X.Y.Z"`; local builds print `dev` and the git revision.
+- `ropa version` prints the version. Release builds set it with `-ldflags "-X main.version=X.Y.Z"`; other builds use the module version Go records (a tag, a pseudo-version or `+dirty`), and fall back to `dev` plus the git revision.
 - There are no tests. `gofmt -l .`, `go vet ./...` and `staticcheck ./...` should be clean. Verify behaviour by running the binary on a throwaway GRF (see "Smoke test" below).
 
 ## Releasing
@@ -134,6 +134,7 @@ Expected output: `data/t/a.txt` and `data/t/b.txt -> data/t/a.txt`. Then confirm
 
 ## Library (`grf` package) pointers
 
+- Import path: `github.com/p2k/ropa/grf` (needs cgo, since it uses the Zopfli wrapper).
 - `grf.Open(path, readonly, koreanFilenames)` and `grf.Create(...)` return an `*Archive`. Always call `Close()`: that is when the file table is written.
 - `Archive` implements `fs.FS`, `ReadDirFS`, `StatFS` and `GlobFS`. `Put`/`PutBytes` compress; `RawPut` stores pre-compressed zlib; `Link`/`LinkHeader` create links, which are entries that share an offset.
 - `NewPipeline(ar, workers, level)` compresses in parallel. Don't touch the archive until `Wait()` returns.

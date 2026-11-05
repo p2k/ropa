@@ -26,12 +26,12 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"github.com/p2k/ropa/grf"
 	"io"
 	"os"
 	"os/signal"
 	"path"
 	"path/filepath"
-	"ropa/grf"
 	"strings"
 
 	"github.com/schollz/progressbar/v3"

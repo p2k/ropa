@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-05
+
+### Changed
+
+- The module path is now `github.com/p2k/ropa`, so ROPA can be installed with `go install github.com/p2k/ropa@latest` and the `grf` package can be imported by other projects.
+- `ropa version` reports the module version when the binary was built with `go install` or from a git checkout.
+
 ## [1.0.0] - 2026-11-03
 
 First tagged release.
@@ -32,5 +39,6 @@ First tagged release.
 - Read errors in filebases, checksum, whiteout, integrity and `SYMLINKS` files were silently ignored, so a truncated file could be processed as if it were complete.
 - Hex hashes of the wrong length were partially accepted.
 
-[Unreleased]: https://github.com/p2k/ropa/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/p2k/ropa/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/p2k/ropa/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/p2k/ropa/releases/tag/v1.0.0

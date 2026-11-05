@@ -23,7 +23,7 @@ package main
 
 import (
 	"fmt"
-	"ropa/grf"
+	"github.com/p2k/ropa/grf"
 )
 
 func runSymsort(path string) bool {

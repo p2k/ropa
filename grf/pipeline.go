@@ -24,9 +24,9 @@ package grf
 import (
 	"bytes"
 	"compress/zlib"
+	"github.com/p2k/ropa/zopfli"
 	"hash"
 	"io"
-	"ropa/zopfli"
 
 	"lukechampine.com/blake3"
 )

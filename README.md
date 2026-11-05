@@ -32,7 +32,13 @@ xattr -d com.apple.quarantine ropa
 
 ### Building from source
 
-You need Go 1.23 or newer and a C compiler, because Zopfli is built with cgo.
+You need Go 1.23 or newer and a C compiler, because Zopfli is built with cgo. The quickest way is `go install`, which puts `ropa` into `$(go env GOPATH)/bin`:
+
+```bash
+go install github.com/p2k/ropa@latest
+```
+
+To build from a clone instead:
 
 ```bash
 git clone https://github.com/p2k/ropa.git
@@ -42,7 +48,17 @@ git clone https://github.com/p2k/ropa.git
 cd ropa && go build
 ```
 
-This produces a single `ropa` binary. The module path is `ropa`, so build from a clone rather than with `go install <url>`. Builds from source report their version as `dev` followed by the git revision.
+Builds from source report the version Go derives from the git tags, such as `1.0.1` for a tagged release or a pseudo-version like `1.0.2-0.20261105120000-abcdef123456` in between.
+
+### Using the library
+
+The GRF format support is a separate Go package that you can use in your own programs. It needs cgo as well.
+
+```bash
+go get github.com/p2k/ropa/grf
+```
+
+The package documentation is on [pkg.go.dev](https://pkg.go.dev/github.com/p2k/ropa/grf).
 
 Quick start
 -----------

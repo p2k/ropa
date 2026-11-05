@@ -31,6 +31,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/p2k/ropa/grf"
+	"github.com/p2k/ropa/zopfli"
 	"hash"
 	"io"
 	"io/fs"
@@ -38,8 +40,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"ropa/grf"
-	"ropa/zopfli"
 	"sort"
 	"strings"
 

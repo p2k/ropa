@@ -24,9 +24,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/p2k/ropa/grf"
 	"os"
 	"os/signal"
-	"ropa/grf"
 
 	"github.com/schollz/progressbar/v3"
 )

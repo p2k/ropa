@@ -23,9 +23,9 @@ package main
 
 import (
 	"fmt"
+	"github.com/p2k/ropa/grf"
 	"os"
 	"os/signal"
-	"ropa/grf"
 	"runtime"
 
 	"github.com/schollz/progressbar/v3"
