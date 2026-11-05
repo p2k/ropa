@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-05
+
+If you wrote to encrypted archives with an earlier version: files added by `update` or `recompress` without `-nopipeline` were stored unencrypted but are still readable; run `ropa encrypt` on the archive to encrypt them. Files written with `-key` by `-nopipeline` or `serve`, and Zopfli-compressed files written with `-nopipeline`, are damaged and need to be added again.
+
 ### Changed
 
 - `optimize -dedup` now also catches files that shared data with a file it had just deduplicated, which previously needed a second run.
@@ -55,6 +59,7 @@ First tagged release.
 - Read errors in filebases, checksum, whiteout, integrity and `SYMLINKS` files were silently ignored, so a truncated file could be processed as if it were complete.
 - Hex hashes of the wrong length were partially accepted.
 
-[Unreleased]: https://github.com/p2k/ropa/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/p2k/ropa/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/p2k/ropa/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/p2k/ropa/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/p2k/ropa/releases/tag/v1.0.0
